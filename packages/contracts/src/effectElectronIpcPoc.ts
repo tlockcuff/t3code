@@ -26,6 +26,14 @@ export const DesktopIpcPocEchoResult = Schema.Struct({
 });
 export type DesktopIpcPocEchoResult = typeof DesktopIpcPocEchoResult.Type;
 
+export class DesktopIpcPocEchoError extends Schema.TaggedErrorClass<DesktopIpcPocEchoError>()(
+  "DesktopIpcPocEchoError",
+  {
+    reason: Schema.Literal("empty-text"),
+    message: Schema.String,
+  },
+) {}
+
 export const DesktopIpcPocSubscribeTicksInput = Schema.Struct({
   take: Schema.Number,
 });
@@ -45,6 +53,7 @@ export const DesktopIpcPocGetRuntimeInfoRpc = Rpc.make(DESKTOP_IPC_POC_METHODS.g
 export const DesktopIpcPocEchoRpc = Rpc.make(DESKTOP_IPC_POC_METHODS.echo, {
   payload: DesktopIpcPocEchoInput,
   success: DesktopIpcPocEchoResult,
+  error: DesktopIpcPocEchoError,
 });
 
 export const DesktopIpcPocSubscribeTicksRpc = Rpc.make(DESKTOP_IPC_POC_METHODS.subscribeTicks, {

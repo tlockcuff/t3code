@@ -11,6 +11,7 @@ import {
   DESKTOP_IPC_POC_METHODS,
   makeDesktopIpcPocClient,
   type DesktopIpcPocClient,
+  type DesktopIpcPocEchoError,
   type DesktopIpcPocEchoResult,
   type DesktopIpcPocRuntimeInfo,
   type DesktopIpcPocTick,
@@ -38,7 +39,7 @@ export const makeDesktopIpcPocBrowserClient: Effect.Effect<
 
 export const loadDesktopIpcPocSnapshot: Effect.Effect<
   DesktopIpcPocSnapshot,
-  RpcClientError,
+  DesktopIpcPocEchoError | RpcClientError,
   Scope.Scope
 > = Effect.gen(function* () {
   const client = yield* makeDesktopIpcPocBrowserClient;

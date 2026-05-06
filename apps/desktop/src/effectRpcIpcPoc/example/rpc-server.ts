@@ -3,7 +3,11 @@ import { RpcServer } from "effect/unstable/rpc";
 
 import type { EffectElectronIpcMainPort } from "effect-electron-ipc/ipc";
 import { makeEffectElectronIpcMainProtocol } from "effect-electron-ipc/main";
-import { DESKTOP_IPC_POC_METHODS, DesktopIpcPocRpcGroup } from "./protocol.ts";
+import {
+  DESKTOP_IPC_POC_METHODS,
+  DesktopIpcPocEchoError,
+  DesktopIpcPocRpcGroup,
+} from "./protocol.ts";
 
 export interface DesktopIpcPocMainOptions {
   readonly port: EffectElectronIpcMainPort;
@@ -24,10 +28,17 @@ export const makeDesktopIpcPocHandlersLayer = (options: DesktopIpcPocMainOptions
           ipcTransport: "electron-ipc" as const,
         }),
       [DESKTOP_IPC_POC_METHODS.echo]: (input) =>
-        Effect.sync(() => ({
-          text: input.text,
-          echoedAt: now().toISOString(),
-        })),
+        input.text.trim().length === 0
+          ? Effect.fail(
+              new DesktopIpcPocEchoError({
+                reason: "empty-text",
+                message: "Echo text cannot be empty.",
+              }),
+            )
+          : Effect.sync(() => ({
+              text: input.text,
+              echoedAt: now().toISOString(),
+            })),
       [DESKTOP_IPC_POC_METHODS.subscribeTicks]: (input) =>
         Stream.fromIterable(
           Array.from({ length: Math.max(0, Math.floor(input.take)) }, (_, index) => ({

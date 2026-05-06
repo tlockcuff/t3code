@@ -88,6 +88,37 @@ describe("effect RPC over Electron IPC proof of concept", () => {
       { sequence: 3, label: "tick:3" },
     ]);
   });
+
+  it("round-trips typed app-level RPC errors", async () => {
+    const ipc = new InMemoryEffectElectronIpc();
+
+    const error = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* runDesktopIpcPocRpcServer({
+            port: ipc.mainPort,
+            appVersion: "0.0.0-test",
+            platform: "test-os",
+          });
+
+          return yield* withEffectElectronIpcRendererBridge(
+            ipc.rendererPort,
+            Effect.gen(function* () {
+              const client = yield* makeDesktopIpcPocBrowserClient;
+
+              return yield* client[DESKTOP_IPC_POC_METHODS.echo]({ text: "" }).pipe(Effect.flip);
+            }),
+          );
+        }),
+      ),
+    );
+
+    expect(error).toMatchObject({
+      _tag: "DesktopIpcPocEchoError",
+      reason: "empty-text",
+      message: "Echo text cannot be empty.",
+    });
+  });
 });
 
 class InMemoryEffectElectronIpc {
