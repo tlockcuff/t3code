@@ -1635,43 +1635,49 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     // Callbacks: command key
     // ------------------------------------------------------------------
-    const onComposerCommandKey = (
-      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
-      event: KeyboardEvent,
-    ) => {
-      if (key === "Tab" && event.shiftKey) {
-        toggleInteractionMode();
-        return true;
-      }
-      const { trigger } = resolveActiveComposerTrigger();
-      const menuIsActive = composerMenuOpenRef.current || trigger !== null;
-      if (menuIsActive) {
-        const currentItems = composerMenuItemsRef.current;
-        const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
-        if (key === "ArrowDown" && currentItems.length > 0) {
-          nudgeComposerMenuHighlight("ArrowDown");
+    const onComposerCommandKey = useCallback(
+      (key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab", event: KeyboardEvent) => {
+        if (key === "Tab" && event.shiftKey) {
+          toggleInteractionMode();
           return true;
         }
-        if (key === "ArrowUp" && currentItems.length > 0) {
-          nudgeComposerMenuHighlight("ArrowUp");
+        const { trigger } = resolveActiveComposerTrigger();
+        const menuIsActive = composerMenuOpenRef.current || trigger !== null;
+        if (menuIsActive) {
+          const currentItems = composerMenuItemsRef.current;
+          const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
+          if (key === "ArrowDown" && currentItems.length > 0) {
+            nudgeComposerMenuHighlight("ArrowDown");
+            return true;
+          }
+          if (key === "ArrowUp" && currentItems.length > 0) {
+            nudgeComposerMenuHighlight("ArrowUp");
+            return true;
+          }
+          if ((key === "Enter" || key === "Tab") && selectedItem) {
+            onSelectComposerItem(selectedItem);
+            return true;
+          }
+        }
+        if (key === "Enter" && !event.shiftKey) {
+          submitComposer();
           return true;
         }
-        if ((key === "Enter" || key === "Tab") && selectedItem) {
-          onSelectComposerItem(selectedItem);
-          return true;
-        }
-      }
-      if (key === "Enter" && !event.shiftKey) {
-        submitComposer();
-        return true;
-      }
-      return false;
-    };
+        return false;
+      },
+      [
+        nudgeComposerMenuHighlight,
+        onSelectComposerItem,
+        resolveActiveComposerTrigger,
+        submitComposer,
+        toggleInteractionMode,
+      ],
+    );
 
     // ------------------------------------------------------------------
     // Callbacks: images
     // ------------------------------------------------------------------
-    const addComposerImages = (files: File[]) => {
+    const addComposerImages = useCallback((files: File[]) => {
       if (!activeThreadId || files.length === 0) return;
       if (pendingUserInputs.length > 0) {
         toastManager.add({
@@ -1714,7 +1720,13 @@ export const ChatComposer = memo(
         addComposerImagesToDraft(nextImages);
       }
       setThreadError(activeThreadId, error);
-    };
+    }, [
+      activeThreadId,
+      addComposerImage,
+      addComposerImagesToDraft,
+      pendingUserInputs.length,
+      setThreadError,
+    ]);
 
     const removeComposerImage = (imageId: string) => {
       removeComposerImageFromDraft(imageId);
@@ -1723,14 +1735,14 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     // Callbacks: paste / drag
     // ------------------------------------------------------------------
-    const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const onComposerPaste = useCallback((event: React.ClipboardEvent<HTMLElement>) => {
       const files = Array.from(event.clipboardData.files);
       if (files.length === 0) return;
       const imageFiles = files.filter((file) => file.type.startsWith("image/"));
       if (imageFiles.length === 0) return;
       event.preventDefault();
       addComposerImages(imageFiles);
-    };
+    }, [addComposerImages]);
 
     const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
       if (!event.dataTransfer.types.includes("Files")) return;
