@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Random from "effect/Random";
 import * as Sink from "effect/Sink";

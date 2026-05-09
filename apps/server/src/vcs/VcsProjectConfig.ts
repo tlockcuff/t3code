@@ -68,7 +68,7 @@ export const make = Effect.fn("makeVcsProjectConfig")(function* () {
   ) {
     const raw = yield* fileSystem.readFileString(configPath).pipe(
       Effect.map(Option.some),
-      Effect.catchAll((error) =>
+      Effect.catch((error) =>
         Effect.logWarning("failed to read VCS project config", {
           configPath,
           error,
