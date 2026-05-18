@@ -62,6 +62,13 @@ export const getLocalEnvironmentBootstraps = makeSyncIpcMethod({
       // backend mid-registration, before its first start cycle). They'll
       // appear on the next IPC call once they've started.
       if (Option.isNone(config)) continue;
+      // Skip instances whose preflight failed (e.g. WSL distro
+      // missing node, the linux server entry was never built). The
+      // backend manager schedules a restart instead of actually
+      // listening, so exposing the bootstrap would point the renderer
+      // at a port nothing is bound to and trigger needless
+      // /api/auth/bootstrap/bearer error cycles.
+      if (Option.isSome(config.value.preflightFailure)) continue;
       const { bootstrap, httpBaseUrl } = config.value;
       bootstraps.push({
         id: instance.id,

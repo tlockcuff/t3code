@@ -24,6 +24,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 
 import * as NetService from "@t3tools/shared/Net";
 
@@ -89,6 +90,12 @@ export const layer = Layer.effect(
     const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
     const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
     const net = yield* NetService.NetService;
+    // Serialize reconcile so the bootstrap fork and the IPC handlers
+    // (setWslBackendEnabled, setWslDistro) can't interleave. Without
+    // this, two reconciles could both observe "no WSL instance
+    // registered" between their pool reads and both call startNew
+    // with different distros, leaving the loser stranded.
+    const reconcileMutex = yield* Semaphore.make(1);
 
     const findExistingWslInstance = pool.list.pipe(
       Effect.map((instances) => instances.find((instance) => isWslInstanceId(instance.id))),
@@ -155,7 +162,7 @@ export const layer = Layer.effect(
       });
     });
 
-    const reconcile = Effect.gen(function* () {
+    const reconcileBody = Effect.gen(function* () {
       const settings = yield* appSettings.get;
       const available = yield* wslEnvironment.isAvailable;
       const existing = yield* findExistingWslInstance;
@@ -196,7 +203,11 @@ export const layer = Layer.effect(
         yield* wslEnvironment.preWarm(settings.wslDistro);
         yield* startNew({ distro: settings.wslDistro });
       }
-    }).pipe(Effect.withSpan("desktop.wslBackend.reconcile"));
+    });
+
+    const reconcile = reconcileMutex
+      .withPermits(1)(reconcileBody)
+      .pipe(Effect.withSpan("desktop.wslBackend.reconcile"));
 
     return DesktopWslBackend.of({ reconcile });
   }),
