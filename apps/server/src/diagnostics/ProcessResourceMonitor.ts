@@ -277,10 +277,7 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     ),
   );
 
-  yield* sampleOnce.pipe(
-    Effect.repeat(Schedule.spaced(SAMPLE_INTERVAL)),
-    Effect.forkScoped,
-  );
+  yield* sampleOnce.pipe(Effect.repeat(Schedule.spaced(SAMPLE_INTERVAL)), Effect.forkScoped);
 
   const readHistory: ProcessResourceMonitorShape["readHistory"] = (input) =>
     Effect.gen(function* () {
