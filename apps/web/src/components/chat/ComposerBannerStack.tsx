@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { XIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -34,6 +41,16 @@ export interface ComposerBannerStackItem {
   readonly onDismiss?: () => void;
 }
 
+function useDismissTimeoutCleanup(timeoutRef: RefObject<ReturnType<typeof setTimeout> | null>) {
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [timeoutRef]);
+}
+
 interface ComposerBannerStackProps {
   readonly className?: string;
   readonly items: ReadonlyArray<ComposerBannerStackItem>;
@@ -42,20 +59,9 @@ interface ComposerBannerStackProps {
 export function ComposerBannerStack({ className, items }: ComposerBannerStackProps) {
   const [exitingItemId, setExitingItemId] = useState<string | null>(null);
   const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (exitingItemId && !items.some((item) => item.id === exitingItemId)) {
-      setExitingItemId(null);
-    }
-  }, [exitingItemId, items]);
-
-  useEffect(() => {
-    return () => {
-      if (dismissTimeoutRef.current) {
-        clearTimeout(dismissTimeoutRef.current);
-      }
-    };
-  }, []);
+  const activeExitingItemId =
+    exitingItemId && items.some((item) => item.id === exitingItemId) ? exitingItemId : null;
+  useDismissTimeoutCleanup(dismissTimeoutRef);
 
   if (items.length === 0) {
     return null;
@@ -67,10 +73,10 @@ export function ComposerBannerStack({ className, items }: ComposerBannerStackPro
   }
   const stackedItems = items.slice(1);
   const hasStack = stackedItems.length > 0;
-  const showCollapsedStackCap = hasStack && exitingItemId !== frontItem.id;
+  const showCollapsedStackCap = hasStack && activeExitingItemId !== frontItem.id;
 
   const requestDismiss = (item: ComposerBannerStackItem) => {
-    if (!item.onDismiss || exitingItemId) {
+    if (!item.onDismiss || activeExitingItemId) {
       return;
     }
     setExitingItemId(item.id);
@@ -106,16 +112,16 @@ export function ComposerBannerStack({ className, items }: ComposerBannerStackPro
         <div
           className={cn(
             "relative z-10",
-            exitingItemId === frontItem.id ? "pointer-events-none" : null,
+            activeExitingItemId === frontItem.id ? "pointer-events-none" : null,
           )}
           style={{
             ...exitTransitionStyle,
-            ...(exitingItemId === frontItem.id ? frontExitStyle : restingStyle),
+            ...(activeExitingItemId === frontItem.id ? frontExitStyle : restingStyle),
           }}
         >
           <ComposerBannerStackAlert
             item={frontItem}
-            exiting={exitingItemId === frontItem.id}
+            exiting={activeExitingItemId === frontItem.id}
             onDismissRequest={() => requestDismiss(frontItem)}
           />
         </div>
@@ -132,15 +138,15 @@ export function ComposerBannerStack({ className, items }: ComposerBannerStackPro
             {stackedItems.map((item) => (
               <div
                 key={item.id}
-                className={cn(exitingItemId === item.id ? "pointer-events-none" : null)}
+                className={cn(activeExitingItemId === item.id ? "pointer-events-none" : null)}
                 style={{
                   ...exitTransitionStyle,
-                  ...(exitingItemId === item.id ? stackedExitStyle : restingStyle),
+                  ...(activeExitingItemId === item.id ? stackedExitStyle : restingStyle),
                 }}
               >
                 <ComposerBannerStackAlert
                   item={item}
-                  exiting={exitingItemId === item.id}
+                  exiting={activeExitingItemId === item.id}
                   onDismissRequest={() => requestDismiss(item)}
                 />
               </div>
