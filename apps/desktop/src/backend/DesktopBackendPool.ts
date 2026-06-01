@@ -93,7 +93,6 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
-import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
@@ -189,7 +188,6 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
-    const settings = yield* DesktopAppSettings.DesktopAppSettings;
     // Anchor the pool's lifetime to its layer scope so registered
     // instance scopes can be forked off it. Without this, instance
     // scopes are orphaned: they only close via explicit unregister()
@@ -205,19 +203,13 @@ export const layer = Layer.effect(
     // primary instance uses.
     const factoryContext = yield* Effect.context<BackendInstanceFactoryRequirements>();
 
-    // Primary label is captured once per process. When wsl-only mode
-    // is active, the primary's configResolve actually returns the WSL
-    // backend config (see DesktopBackendConfiguration.resolvePrimary),
-    // so the label needs to match. We don't try to react to runtime
-    // setting changes here: the wsl-only switch requires an app
-    // restart so the label reflects the mode the user is actually in.
-    const initialSettings = yield* settings.get;
-    const primaryLabel =
-      initialSettings.wslOnly && initialSettings.wslBackendEnabled
-        ? initialSettings.wslDistro
-          ? `WSL (${initialSettings.wslDistro})`
-          : "WSL"
-        : "Windows";
+    // Primary label is captured once per process. The configuration derives
+    // it from the same decision resolvePrimary makes (wsl-only + WSL actually
+    // available, else Windows), so the label always matches the backend that
+    // resolves — including the fall-back to Windows when WSL is unavailable.
+    // We don't react to runtime setting changes here: the wsl-only switch
+    // requires an app restart, so this reflects the mode the user is in.
+    const primaryLabel = yield* configuration.resolvePrimaryLabel;
 
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,

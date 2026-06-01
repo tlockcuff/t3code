@@ -38,6 +38,11 @@ export interface DesktopBackendConfigurationShape {
     readonly port: number;
     readonly distro: string | null;
   }) => Effect.Effect<DesktopBackendManager.DesktopBackendStartConfig, PlatformError.PlatformError>;
+  // The renderer-facing label for the primary instance, derived from the
+  // same decision resolvePrimary makes (including the WSL-availability
+  // fall-back to Windows), so the env switcher can't show "WSL" for a
+  // backend that actually resolved to Windows.
+  readonly resolvePrimaryLabel: Effect.Effect<string>;
 }
 
 export class DesktopBackendConfiguration extends Context.Service<
@@ -501,31 +506,44 @@ export const layer = Layer.effect(
       );
     });
 
+    // Single source of truth for what the primary actually runs as. Both
+    // the start-config dispatch and the renderer-facing label derive from
+    // this, so they can't disagree — e.g. the label reading "WSL" while the
+    // config silently fell back to Windows because WSL is unavailable.
+    // Dispatch happens at resolve time so toggling wsl-only between restarts
+    // is picked up on the next start cycle (the pool's primary instance is
+    // created once at layer init, but configResolve fires on each restart).
+    const describePrimary = Effect.gen(function* () {
+      const persistedSettings = yield* settings.get;
+      const wslRequested = persistedSettings.wslOnly && persistedSettings.wslBackendEnabled;
+      // Only honor wsl-only when WSL is actually usable. If the user
+      // persisted wsl-only but WSL has since become unavailable (wsl.exe
+      // removed, no distro), fall back to the Windows primary instead of
+      // looping forever on preflight failures: the Connections backend
+      // control is hidden while WSL is unavailable, so a stuck WSL primary
+      // would otherwise leave no in-app way back to Windows.
+      const useWsl = wslRequested && (yield* wslEnvironment.isAvailable);
+      return { useWsl, wslRequested, distro: persistedSettings.wslDistro };
+    });
+
     return DesktopBackendConfiguration.of({
       resolvePrimary: Effect.gen(function* () {
-        // Dispatch on the wsl-only setting at resolve time so the
-        // user toggling the mode between restarts picks up the new
-        // path on the next start cycle. The pool's primary
-        // BackendInstance is created once at layer init, but its
-        // configResolve fires each time the backend (re)starts.
-        const persistedSettings = yield* settings.get;
-        if (persistedSettings.wslOnly && persistedSettings.wslBackendEnabled) {
-          // Only honor wsl-only when WSL is actually usable. If the user
-          // persisted wsl-only but WSL has since become unavailable (wsl.exe
-          // removed, no distro), fall back to the Windows primary instead of
-          // looping forever on preflight failures: the Connections backend
-          // control is hidden while WSL is unavailable, so a stuck WSL
-          // primary would otherwise leave no in-app way back to Windows.
-          const wslAvailable = yield* wslEnvironment.isAvailable;
-          if (wslAvailable) {
-            return yield* buildWslPrimaryConfig;
-          }
+        const { useWsl, wslRequested } = yield* describePrimary;
+        if (useWsl) {
+          return yield* buildWslPrimaryConfig;
+        }
+        if (wslRequested) {
           yield* Effect.logWarning(
             "WSL-only backend requested but WSL is unavailable; starting the Windows primary instead.",
           );
         }
         return yield* buildWindowsPrimaryConfig;
       }).pipe(Effect.withSpan("desktop.backendConfiguration.resolvePrimary")),
+      resolvePrimaryLabel: Effect.gen(function* () {
+        const { useWsl, distro } = yield* describePrimary;
+        if (!useWsl) return "Windows";
+        return distro ? `WSL (${distro})` : "WSL";
+      }).pipe(Effect.withSpan("desktop.backendConfiguration.resolvePrimaryLabel")),
       resolveWsl: (input) =>
         Effect.gen(function* () {
           const shared = yield* sharedInputs;

@@ -339,4 +339,69 @@ describe("DesktopBackendConfiguration", () => {
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("resolvePrimaryLabel reports the WSL distro when wsl-only and WSL is available", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const label = yield* configuration.resolvePrimaryLabel;
+        assert.equal(label, "WSL (Ubuntu)");
+      }).pipe(
+        Effect.provide(
+          DesktopBackendConfiguration.layer.pipe(
+            Layer.provideMerge(serverExposureLayer),
+            Layer.provideMerge(
+              DesktopAppSettings.layerTest({
+                ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+                wslBackendEnabled: true,
+                wslOnly: true,
+                wslDistro: "Ubuntu",
+              }),
+            ),
+            Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: true })),
+            Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("resolvePrimaryLabel reports Windows when wsl-only but WSL is unavailable", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+
+      yield* Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        // Mirrors the resolvePrimary fall-back: the label must follow the
+        // backend that actually resolves, not the persisted preference, so the
+        // env switcher can't show "WSL" for a Windows backend.
+        const label = yield* configuration.resolvePrimaryLabel;
+        assert.equal(label, "Windows");
+      }).pipe(
+        Effect.provide(
+          DesktopBackendConfiguration.layer.pipe(
+            Layer.provideMerge(serverExposureLayer),
+            Layer.provideMerge(
+              DesktopAppSettings.layerTest({
+                ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+                wslBackendEnabled: true,
+                wslOnly: true,
+                wslDistro: "Ubuntu",
+              }),
+            ),
+            Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: false })),
+            Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
