@@ -6,7 +6,7 @@ export class SshHostDiscoveryError extends Schema.TaggedErrorClass<SshHostDiscov
   "SshHostDiscoveryError",
   {
     message: Schema.String,
-    cause: Schema.Defect,
+    cause: Schema.Defect(),
   },
 ) {}
 
@@ -23,19 +23,19 @@ export class SshCommandError extends Schema.TaggedErrorClass<SshCommandError>()(
   exitCode: Schema.NullOr(Schema.Number),
   stderr: Schema.String,
   stdout: Schema.optional(Schema.String),
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class SshLaunchError extends Schema.TaggedErrorClass<SshLaunchError>()("SshLaunchError", {
   message: Schema.String,
   stdout: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class SshPairingError extends Schema.TaggedErrorClass<SshPairingError>()("SshPairingError", {
   message: Schema.String,
   stdout: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(Schema.Defect()),
 }) {}
 
 export class SshHttpBridgeError extends Schema.TaggedErrorClass<SshHttpBridgeError>()(
@@ -43,7 +43,7 @@ export class SshHttpBridgeError extends Schema.TaggedErrorClass<SshHttpBridgeErr
   {
     message: Schema.String,
     status: Schema.optional(Schema.Number),
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -51,7 +51,7 @@ export class SshReadinessError extends Schema.TaggedErrorClass<SshReadinessError
   "SshReadinessError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -59,7 +59,7 @@ export class SshPasswordPromptError extends Schema.TaggedErrorClass<SshPasswordP
   "SshPasswordPromptError",
   {
     message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
