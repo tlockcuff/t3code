@@ -61,6 +61,7 @@ import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
+  firstUnsuccessfulSecondaryProviderOutcome,
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateActive,
   type ProviderUpdateCandidate,
@@ -992,6 +993,26 @@ export function ProviderSettingsPanel() {
       const rejected = results.find((result) => result.status === "rejected");
       if (rejected?.status === "rejected") {
         throw rejected.reason;
+      }
+      // The primary's own outcome is reflected inline (its row refreshes from
+      // serverState), but a secondary backend (e.g. WSL) has no inline row, so a
+      // copy that resolved as failed or still-outdated would otherwise look like
+      // a success. Surface it explicitly.
+      const secondaryIssue = firstUnsuccessfulSecondaryProviderOutcome(results);
+      if (secondaryIssue) {
+        const providerName = PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver;
+        toastManager.add(
+          stackedThreadToast({
+            type: secondaryIssue.status === "failed" ? "error" : "warning",
+            title:
+              secondaryIssue.status === "failed"
+                ? `Could not update ${providerName} in a connected environment`
+                : `${providerName} still needs an update in a connected environment`,
+            description:
+              secondaryIssue.provider.updateState?.message ??
+              "The update did not complete in a connected environment. Check provider settings for details.",
+          }),
+        );
       }
     } catch (error) {
       toastManager.add(

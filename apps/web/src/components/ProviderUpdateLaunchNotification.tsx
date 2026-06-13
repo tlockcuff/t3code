@@ -10,7 +10,7 @@ import { PROVIDER_ICON_BY_PROVIDER } from "./chat/providerIconUtils";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
-  collectUpdatedProviderSnapshots,
+  collectProviderUpdateOutcomeSnapshots,
   firstRejectedProviderUpdateMessage,
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
@@ -32,6 +32,10 @@ type ActiveProviderUpdateToast =
       readonly toastId: ProviderUpdateToastId;
       readonly providerInstanceIds: ReadonlySet<ProviderInstanceId>;
       readonly providerCount: number;
+      // True until every dispatched backend update settles. While true the
+      // primary-only serverState effect must not finalize the toast, since it
+      // cannot observe a secondary (e.g. WSL) backend's outcome.
+      readonly awaitingSettlement: boolean;
     };
 
 function ProviderUpdateToastIcon({ provider }: { provider: ProviderDriverKind }) {
@@ -139,6 +143,14 @@ export function ProviderUpdateLaunchNotification() {
       return;
     }
 
+    // The dispatched updates have not all settled yet. This effect only sees the
+    // primary backend's serverState, so it cannot tell whether a secondary (e.g.
+    // WSL) backend succeeded — leave the running toast in place and let the
+    // settled-promise handler report the aggregate outcome.
+    if (activeToast.awaitingSettlement) {
+      return;
+    }
+
     const activeProviders = providers.filter((provider) =>
       activeToast.providerInstanceIds.has(provider.instanceId),
     );
@@ -198,6 +210,7 @@ export function ProviderUpdateLaunchNotification() {
         toastId,
         providerInstanceIds,
         providerCount,
+        awaitingSettlement: true,
       };
 
       updateProviderUpdateToast({
@@ -216,6 +229,9 @@ export function ProviderUpdateLaunchNotification() {
           return;
         }
 
+        // Every backend has settled — release the live serverState effect.
+        activeToastRef.current = { ...activeUpdateToast, awaitingSettlement: false };
+
         const rejectedMessage = firstRejectedProviderUpdateMessage(results);
         if (rejectedMessage) {
           updateProviderUpdateToast({
@@ -227,10 +243,7 @@ export function ProviderUpdateLaunchNotification() {
           return;
         }
 
-        const updatedProviderSnapshots = collectUpdatedProviderSnapshots({
-          results,
-          providerInstanceIds,
-        });
+        const updatedProviderSnapshots = collectProviderUpdateOutcomeSnapshots(results);
         const view = getProviderUpdateProgressToastView({
           providers: updatedProviderSnapshots,
           providerCount,

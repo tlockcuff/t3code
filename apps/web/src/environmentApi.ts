@@ -3,10 +3,10 @@ import type {
   EnvironmentApi,
   ProviderDriverKind,
   ProviderInstanceId,
-  ServerProviderUpdatedPayload,
+  ServerProvider,
 } from "@t3tools/contracts";
 
-import type { WsRpcClient } from "@t3tools/client-runtime";
+import type { EnvironmentConnection, WsRpcClient } from "@t3tools/client-runtime";
 import {
   getPrimaryEnvironmentConnection,
   getSavedEnvironmentRuntimeState,
@@ -99,21 +99,56 @@ export function ensureEnvironmentApi(environmentId: EnvironmentId): EnvironmentA
 }
 
 /**
+ * The settled result of dispatching a provider update to a single local
+ * backend. `provider` is the matching snapshot from that backend's update
+ * payload, carrying its terminal `updateState` (succeeded / unchanged /
+ * failed) — `null` only if the backend did not return the targeted instance.
+ * Callers use this to detect a secondary backend that *resolved* with a failed
+ * or unchanged provider, which a bare promise (rejection-only) would miss.
+ */
+export interface LocalProviderUpdateOutcome {
+  readonly environmentId: EnvironmentId;
+  readonly isPrimary: boolean;
+  readonly driver: ProviderDriverKind;
+  readonly instanceId: ProviderInstanceId;
+  readonly provider: ServerProvider | null;
+}
+
+/**
  * Dispatch a provider update to every connected local backend that has the
  * provider configured — the primary plus any local secondary (e.g. WSL) — and
- * return one in-flight promise per environment so callers can aggregate results
- * with the existing toast helpers. The update candidate always comes from the
- * primary's provider list, so its instance id is passed in for the primary;
- * each secondary's instance id is looked up from that environment's own server
+ * return one in-flight outcome per environment so callers can aggregate results
+ * across backends. The update candidate always comes from the primary's
+ * provider list, so its instance id is passed in for the primary; each
+ * secondary's instance id is looked up from that environment's own server
  * config, since the same driver has a distinct instance id per environment.
  */
 export function updateProviderAcrossLocalEnvironments(
   driver: ProviderDriverKind,
   primaryInstanceId: ProviderInstanceId,
-): ReadonlyArray<Promise<ServerProviderUpdatedPayload>> {
+): ReadonlyArray<Promise<LocalProviderUpdateOutcome>> {
   const primary = getPrimaryEnvironmentConnection();
-  const dispatches: Array<Promise<ServerProviderUpdatedPayload>> = [
-    primary.client.server.updateProvider({ provider: driver, instanceId: primaryInstanceId }),
+
+  const dispatch = (
+    connection: EnvironmentConnection,
+    instanceId: ProviderInstanceId,
+    isPrimary: boolean,
+  ): Promise<LocalProviderUpdateOutcome> =>
+    connection.client.server
+      .updateProvider({ provider: driver, instanceId })
+      .then((payload) => ({
+        environmentId: connection.environmentId,
+        isPrimary,
+        driver,
+        instanceId,
+        provider:
+          payload.providers.find(
+            (candidate) => candidate.driver === driver && candidate.instanceId === instanceId,
+          ) ?? null,
+      }));
+
+  const dispatches: Array<Promise<LocalProviderUpdateOutcome>> = [
+    dispatch(primary, primaryInstanceId, true),
   ];
 
   for (const record of listSavedEnvironmentRecords()) {
@@ -131,9 +166,7 @@ export function updateProviderAcrossLocalEnvironments(
     if (!match) {
       continue; // provider not configured in this environment
     }
-    dispatches.push(
-      connection.client.server.updateProvider({ provider: driver, instanceId: match.instanceId }),
-    );
+    dispatches.push(dispatch(connection, match.instanceId, false));
   }
 
   return dispatches;

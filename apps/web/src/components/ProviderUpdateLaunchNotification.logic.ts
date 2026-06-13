@@ -6,6 +6,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 
+import type { LocalProviderUpdateOutcome } from "../environmentApi";
+
 export type ProviderUpdateCandidate = ServerProvider & {
   readonly versionAdvisory: NonNullable<ServerProvider["versionAdvisory"]> & {
     readonly status: "behind_latest";
@@ -356,6 +358,73 @@ export function firstRejectedProviderUpdateMessage(
     return null;
   }
   return rejected.reason instanceof Error ? rejected.reason.message : "Provider update failed.";
+}
+
+// Worst-case ordering across backends: a failed copy outranks an unchanged one,
+// which outranks a still-running one, which outranks a succeeded one.
+const PROVIDER_UPDATE_STATUS_SEVERITY: Record<string, number> = {
+  succeeded: 1,
+  queued: 2,
+  running: 2,
+  unchanged: 3,
+  failed: 4,
+};
+
+function providerUpdateOutcomeSeverity(provider: ServerProvider): number {
+  return PROVIDER_UPDATE_STATUS_SEVERITY[provider.updateState?.status ?? ""] ?? 0;
+}
+
+/**
+ * Reduce per-backend update outcomes to one representative snapshot per driver,
+ * keeping the worst-case status across every local backend. Because the same
+ * driver has a distinct instance id per environment, a secondary backend (e.g.
+ * WSL) that *resolved* with a failed or unchanged provider would otherwise be
+ * filtered out (its instance id is not the primary's) or collapsed behind the
+ * primary's success — this surfaces it instead.
+ */
+export function collectProviderUpdateOutcomeSnapshots(
+  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
+): ServerProvider[] {
+  const worstByDriver = new Map<ProviderDriverKind, ServerProvider>();
+  for (const result of results) {
+    if (result.status !== "fulfilled" || result.value.provider === null) {
+      continue;
+    }
+    const provider = result.value.provider;
+    const current = worstByDriver.get(provider.driver);
+    if (
+      !current ||
+      providerUpdateOutcomeSeverity(provider) > providerUpdateOutcomeSeverity(current)
+    ) {
+      worstByDriver.set(provider.driver, provider);
+    }
+  }
+  return [...worstByDriver.values()];
+}
+
+/**
+ * The first secondary (non-primary) backend whose update resolved without
+ * succeeding. The primary's own failed/unchanged state is already surfaced
+ * inline in settings, so only secondaries (which have no inline row) need an
+ * explicit callout.
+ */
+export function firstUnsuccessfulSecondaryProviderOutcome(
+  results: ReadonlyArray<PromiseSettledResult<LocalProviderUpdateOutcome>>,
+): { readonly provider: ServerProvider; readonly status: "failed" | "unchanged" } | null {
+  for (const result of results) {
+    if (result.status !== "fulfilled") {
+      continue;
+    }
+    const outcome = result.value;
+    if (outcome.isPrimary || outcome.provider === null) {
+      continue;
+    }
+    const status = outcome.provider.updateState?.status;
+    if (status === "failed" || status === "unchanged") {
+      return { provider: outcome.provider, status };
+    }
+  }
+  return null;
 }
 
 function getUpdateFinishedAt(provider: ServerProvider): string | null {

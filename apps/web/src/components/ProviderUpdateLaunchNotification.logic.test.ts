@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
+import type { LocalProviderUpdateOutcome } from "../environmentApi";
 import {
   canOneClickUpdateProviderCandidate,
   collectProviderUpdateCandidates,
+  collectProviderUpdateOutcomeSnapshots,
   collectUpdatedProviderSnapshots,
   firstRejectedProviderUpdateMessage,
+  firstUnsuccessfulSecondaryProviderOutcome,
   getProviderUpdateInitialToastView,
   getProviderUpdateProgressToastView,
   getProviderUpdateRejectedToastView,
@@ -669,5 +672,165 @@ describe("provider update launch notification logic", () => {
         provider({ driver: driver("cursor"), canUpdate: false }),
       ]),
     ).toBeNull();
+  });
+
+  describe("multi-backend update outcomes", () => {
+    const terminalState = (
+      status: "succeeded" | "failed" | "unchanged",
+      message: string,
+    ): NonNullable<ServerProvider["updateState"]> => ({
+      status,
+      startedAt: checkedAt,
+      finishedAt: checkedAt,
+      message,
+      output: null,
+    });
+
+    const fulfilledOutcome = (
+      isPrimary: boolean,
+      snapshot: ServerProvider | null,
+      environment = "env",
+    ): PromiseSettledResult<LocalProviderUpdateOutcome> => ({
+      status: "fulfilled",
+      value: {
+        environmentId: environment as LocalProviderUpdateOutcome["environmentId"],
+        isPrimary,
+        driver: snapshot?.driver ?? driver("codex"),
+        instanceId: snapshot?.instanceId ?? instanceId("codex"),
+        provider: snapshot,
+      },
+    });
+
+    it("surfaces a secondary backend's failed update over the primary's success", () => {
+      const snapshots = collectProviderUpdateOutcomeSnapshots([
+        fulfilledOutcome(
+          true,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("succeeded", "Provider updated."),
+          }),
+        ),
+        fulfilledOutcome(
+          false,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("failed", "npm: NotFound"),
+          }),
+        ),
+      ]);
+
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]?.updateState?.status).toBe("failed");
+      expect(
+        getProviderUpdateProgressToastView({ providers: snapshots, providerCount: 1 }),
+      ).toMatchObject({ phase: "failed" });
+    });
+
+    it("surfaces a secondary backend that stayed outdated over the primary's success", () => {
+      const snapshots = collectProviderUpdateOutcomeSnapshots([
+        fulfilledOutcome(
+          true,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("succeeded", "Provider updated."),
+          }),
+        ),
+        fulfilledOutcome(
+          false,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("unchanged", "still outdated"),
+          }),
+        ),
+      ]);
+
+      expect(snapshots[0]?.updateState?.status).toBe("unchanged");
+      expect(
+        getProviderUpdateProgressToastView({ providers: snapshots, providerCount: 1 }),
+      ).toMatchObject({ phase: "unchanged" });
+    });
+
+    it("reports success only when every backend succeeded", () => {
+      const snapshots = collectProviderUpdateOutcomeSnapshots([
+        fulfilledOutcome(
+          true,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("succeeded", "Provider updated."),
+          }),
+        ),
+        fulfilledOutcome(
+          false,
+          provider({
+            driver: driver("codex"),
+            updateState: terminalState("succeeded", "Provider updated."),
+          }),
+        ),
+      ]);
+
+      expect(
+        getProviderUpdateProgressToastView({ providers: snapshots, providerCount: 1 }),
+      ).toMatchObject({ phase: "succeeded" });
+    });
+
+    it("ignores backends that did not return the targeted instance", () => {
+      const primary = provider({
+        driver: driver("codex"),
+        updateState: terminalState("succeeded", "Provider updated."),
+      });
+      const snapshots = collectProviderUpdateOutcomeSnapshots([
+        fulfilledOutcome(true, primary),
+        fulfilledOutcome(false, null),
+      ]);
+
+      expect(snapshots).toEqual([primary]);
+    });
+
+    it("flags the first unsuccessful secondary outcome, skipping the primary and successes", () => {
+      const primaryFailed = provider({
+        driver: driver("codex"),
+        updateState: terminalState("failed", "primary boom"),
+      });
+
+      expect(
+        firstUnsuccessfulSecondaryProviderOutcome([
+          fulfilledOutcome(true, primaryFailed),
+          fulfilledOutcome(
+            false,
+            provider({
+              driver: driver("codex"),
+              updateState: terminalState("succeeded", "ok"),
+            }),
+          ),
+        ]),
+      ).toBeNull();
+
+      expect(
+        firstUnsuccessfulSecondaryProviderOutcome([
+          fulfilledOutcome(true, primaryFailed),
+          fulfilledOutcome(
+            false,
+            provider({
+              driver: driver("codex"),
+              updateState: terminalState("failed", "wsl boom"),
+            }),
+          ),
+        ]),
+      ).toMatchObject({ status: "failed", provider: { updateState: { message: "wsl boom" } } });
+    });
+
+    it("treats a rejected dispatch as not contributing a snapshot", () => {
+      const primary = provider({
+        driver: driver("codex"),
+        updateState: terminalState("succeeded", "Provider updated."),
+      });
+      const results: PromiseSettledResult<LocalProviderUpdateOutcome>[] = [
+        fulfilledOutcome(true, primary),
+        { status: "rejected", reason: new Error("WebSocket closed") },
+      ];
+
+      expect(collectProviderUpdateOutcomeSnapshots(results)).toEqual([primary]);
+      expect(firstRejectedProviderUpdateMessage(results)).toBe("WebSocket closed");
+    });
   });
 });
