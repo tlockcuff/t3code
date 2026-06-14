@@ -111,12 +111,18 @@ function ProviderUpdateEnvironmentsNotification() {
       !dismissedNotificationKeys.has(notificationKey) &&
       !seenProviderUpdateNotificationKeys.has(notificationKey);
 
-    // Replace a prompt the user hasn't acted on yet when the available updates
-    // change — but only when a replacement can take its place, so the popover
-    // never just disappears (e.g. while backends are re-settling). Once an
-    // update is in progress, keep the toast so its rows survive.
+    // Close a prompt the user hasn't acted on yet when the available updates
+    // change: when they clear entirely (key null) so the toast doesn't linger,
+    // and when a fresh set is ready to replace it. Keep it only while a backend
+    // is re-settling (updates still exist, just gated) — and once an update is
+    // in progress, so its rows survive.
     const active = activeToastRef.current;
-    if (active && active.key !== notificationKey && !hasInteractedRef.current && canShowPrompt) {
+    if (
+      active &&
+      active.key !== notificationKey &&
+      !hasInteractedRef.current &&
+      (notificationKey === null || !isGated)
+    ) {
       toastManager.close(active.toastId);
       activeToastRef.current = null;
     }
