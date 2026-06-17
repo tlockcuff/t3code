@@ -171,6 +171,18 @@ export interface WsRpcClient {
     readonly getProcessResourceHistory: RpcUnaryMethod<
       typeof WS_METHODS.serverGetProcessResourceHistory
     >;
+    readonly getResourceTelemetry: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverGetResourceTelemetry
+    >;
+    readonly getResourceTelemetryHistory: RpcUnaryMethod<
+      typeof WS_METHODS.serverGetResourceTelemetryHistory
+    >;
+    readonly retryResourceTelemetry: RpcUnaryNoArgMethod<
+      typeof WS_METHODS.serverRetryResourceTelemetry
+    >;
+    readonly subscribeResourceTelemetry: RpcStreamMethod<
+      typeof WS_METHODS.subscribeResourceTelemetry
+    >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
     readonly reportClientActivity: RpcUnaryMethod<typeof WS_METHODS.serverReportClientActivity>;
     readonly reportHostPowerState: RpcUnaryMethod<typeof WS_METHODS.serverReportHostPowerState>;
@@ -395,6 +407,18 @@ export function createWsRpcClient(
         transport.request((client) => client[WS_METHODS.serverGetProcessDiagnostics]({})),
       getProcessResourceHistory: (input) =>
         transport.request((client) => client[WS_METHODS.serverGetProcessResourceHistory](input)),
+      getResourceTelemetry: () =>
+        transport.request((client) => client[WS_METHODS.serverGetResourceTelemetry]({})),
+      getResourceTelemetryHistory: (input) =>
+        transport.request((client) => client[WS_METHODS.serverGetResourceTelemetryHistory](input)),
+      retryResourceTelemetry: () =>
+        transport.request((client) => client[WS_METHODS.serverRetryResourceTelemetry]({})),
+      subscribeResourceTelemetry: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribeResourceTelemetry]({}),
+          listener,
+          subscriptionOptions(options, WS_METHODS.subscribeResourceTelemetry),
+        ),
       signalProcess: (input) =>
         transport.request((client) => client[WS_METHODS.serverSignalProcess](input)),
       reportClientActivity: (input) =>

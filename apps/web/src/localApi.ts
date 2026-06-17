@@ -159,6 +159,18 @@ function createBrowserLocalApi(rpcClient?: WsRpcClient): LocalApi {
         rpcClient
           ? rpcClient.server.getProcessResourceHistory(input)
           : Promise.reject(unavailableLocalBackendError()),
+      getResourceTelemetry: () =>
+        rpcClient
+          ? rpcClient.server.getResourceTelemetry()
+          : Promise.reject(unavailableLocalBackendError()),
+      getResourceTelemetryHistory: (input) =>
+        rpcClient
+          ? rpcClient.server.getResourceTelemetryHistory(input)
+          : Promise.reject(unavailableLocalBackendError()),
+      retryResourceTelemetry: () =>
+        rpcClient
+          ? rpcClient.server.retryResourceTelemetry()
+          : Promise.reject(unavailableLocalBackendError()),
       signalProcess: (input) =>
         rpcClient
           ? rpcClient.server.signalProcess(input)

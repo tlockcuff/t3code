@@ -33,6 +33,12 @@ import type {
 } from "./project.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
+  ResourceTelemetryHistory,
+  ResourceTelemetryHistoryInput,
+  ResourceTelemetryRetryResult,
+  ResourceTelemetrySnapshot,
+} from "./resourceTelemetry.ts";
+import type {
   ServerConfig,
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
@@ -1078,6 +1084,11 @@ export interface LocalApi {
     getProcessResourceHistory: (
       input: ServerProcessResourceHistoryInput,
     ) => Promise<ServerProcessResourceHistoryResult>;
+    getResourceTelemetry: () => Promise<ResourceTelemetrySnapshot>;
+    getResourceTelemetryHistory: (
+      input: ResourceTelemetryHistoryInput,
+    ) => Promise<ResourceTelemetryHistory>;
+    retryResourceTelemetry: () => Promise<ResourceTelemetryRetryResult>;
     signalProcess: (input: ServerSignalProcessInput) => Promise<ServerSignalProcessResult>;
   };
 }
