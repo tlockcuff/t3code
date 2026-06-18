@@ -4,6 +4,7 @@ import type {
   EnvironmentThread,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { mergeEnvironmentThread } from "@t3tools/client-runtime/state/threads";
 import type {
   OrchestrationMessage,
   OrchestrationProposedPlan,
@@ -14,6 +15,7 @@ import type {
 } from "@t3tools/contracts";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
+import { useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentThreadDetails, environmentThreadShells } from "./threads";
@@ -125,6 +127,13 @@ export function useThreadDetail(ref: ScopedThreadRef | null): EnvironmentThread 
   return useAtomValue(
     ref === null ? EMPTY_THREAD_DETAIL_ATOM : environmentThreadDetails.detailAtom(ref),
   );
+}
+
+/** Detail collections composed with shell-authoritative thread/workspace metadata. */
+export function useThread(ref: ScopedThreadRef | null): EnvironmentThread | null {
+  const shell = useThreadShell(ref);
+  const detail = useThreadDetail(ref);
+  return useMemo(() => mergeEnvironmentThread(detail, shell), [detail, shell]);
 }
 
 export function useThreadMessages(

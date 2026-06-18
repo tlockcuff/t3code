@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 
 import type {
   EnvironmentId,
@@ -149,9 +149,14 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [repositoryGroups],
   );
 
-  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
-    projects[0]?.environmentId ?? null,
+  const [selectedEnvironmentIdOverride, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
+    null,
   );
+  const selectedEnvironmentId =
+    selectedEnvironmentIdOverride !== null &&
+    projects.some((project) => project.environmentId === selectedEnvironmentIdOverride)
+      ? selectedEnvironmentIdOverride
+      : (projects[0]?.environmentId ?? null);
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const [selectedModelKey, setSelectedModelKey] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("local");
@@ -170,11 +175,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
 
   const reset = useCallback(() => {
-    console.log("[new task flow] reset", {
-      defaultEnvironmentId: projects[0]?.environmentId ?? null,
-      projectCount: projects.length,
-    });
-    setSelectedEnvironmentId(projects[0]?.environmentId ?? null);
+    setSelectedEnvironmentId(null);
     setSelectedProjectKey(null);
     setSelectedModelKey(null);
     setWorkspaceMode("local");
@@ -186,18 +187,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     setInteractionMode(DEFAULT_PROVIDER_INTERACTION_MODE);
     setModelSelectionOverrides({});
     setExpandedProvider(null);
-  }, [projects]);
-
-  useEffect(() => {
-    if (selectedEnvironmentId !== null || projects.length === 0) {
-      return;
-    }
-
-    console.log("[new task flow] initializing environment", {
-      environmentId: projects[0]!.environmentId,
-    });
-    setSelectedEnvironmentId(projects[0]!.environmentId);
-  }, [projects, selectedEnvironmentId]);
+  }, []);
 
   const environments = useMemo(
     () =>
@@ -530,24 +520,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       removeAttachment,
     ],
   );
-
-  useEffect(() => {
-    console.log("[new task flow] state", {
-      availableBranchCount: availableBranches.length,
-      environmentCount: environments.length,
-      logicalProjectCount: logicalProjects.length,
-      selectedEnvironmentId,
-      selectedProjectKey,
-      selectedProjectTitle: selectedProject?.title ?? null,
-    });
-  }, [
-    availableBranches.length,
-    environments.length,
-    logicalProjects.length,
-    selectedEnvironmentId,
-    selectedProject?.title,
-    selectedProjectKey,
-  ]);
 
   return <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>;
 }

@@ -20,7 +20,7 @@ import {
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { usePaginatedBranches } from "../state/queries";
-import { useProject, useThreadDetail } from "../state/entities";
+import { useProject, useThread } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -111,7 +111,7 @@ export function BranchToolbarBranchSelector({
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
   );
-  const serverThread = useThreadDetail(threadRef);
+  const serverThread = useThread(threadRef);
   const serverSession = serverThread?.session ?? null;
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
@@ -475,14 +475,6 @@ export function BranchToolbarBranchSelector({
     setShowTopBranchScrollFade(scrollElement.scrollTop > 1);
     setShowBottomBranchScrollFade(maxScrollOffset - scrollElement.scrollTop > 1);
   }, []);
-
-  useEffect(() => {
-    if (isBranchMenuOpen) {
-      return;
-    }
-    setShowTopBranchScrollFade(false);
-    setShowBottomBranchScrollFade(false);
-  }, [isBranchMenuOpen]);
 
   useLayoutEffect(() => {
     if (!isBranchMenuOpen) {

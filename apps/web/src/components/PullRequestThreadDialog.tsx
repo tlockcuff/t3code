@@ -71,13 +71,6 @@ export function PullRequestThreadDialog({
 
   useEffect(() => {
     if (!open) return;
-    setReference(initialReference ?? "");
-    setReferenceDirty(false);
-    setPreparingMode(null);
-  }, [initialReference, open]);
-
-  useEffect(() => {
-    if (!open) return;
     const frame = window.requestAnimationFrame(() => {
       referenceInputRef.current?.focus();
       referenceInputRef.current?.select();

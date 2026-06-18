@@ -11,7 +11,7 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
-import type { EnvironmentThread } from "./models.ts";
+import type { EnvironmentThread, EnvironmentThreadShell } from "./models.ts";
 import { scopeThread } from "./models.ts";
 import { EMPTY_ENVIRONMENT_THREAD_STATE, type EnvironmentThreadState } from "./threads.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
@@ -21,6 +21,45 @@ const EMPTY_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = Object.free
 const EMPTY_PROPOSED_PLANS: ReadonlyArray<OrchestrationProposedPlan> = Object.freeze([]);
 const EMPTY_CHECKPOINTS: ReadonlyArray<OrchestrationCheckpointSummary> = Object.freeze([]);
 const THREAD_DETAIL_IDLE_TTL_MS = 5 * 60_000;
+
+/**
+ * Combine detail-only collections with the shell's authoritative thread metadata.
+ *
+ * Shell and detail subscriptions are intentionally independent. A cached detail can
+ * therefore briefly outlive a newer shell snapshot after reconnecting. Workspace
+ * consumers must use the shell branch/worktree/project fields so they do not target
+ * a stale checkout while retaining messages, activities, plans, and checkpoints
+ * from the detail subscription.
+ */
+export function mergeEnvironmentThread(
+  detail: EnvironmentThread | null,
+  shell: EnvironmentThreadShell | null,
+): EnvironmentThread | null {
+  if (detail === null || shell === null) {
+    return detail;
+  }
+  if (detail.environmentId !== shell.environmentId || detail.id !== shell.id) {
+    return detail;
+  }
+
+  return {
+    ...detail,
+    environmentId: shell.environmentId,
+    id: shell.id,
+    projectId: shell.projectId,
+    title: shell.title,
+    modelSelection: shell.modelSelection,
+    runtimeMode: shell.runtimeMode,
+    interactionMode: shell.interactionMode,
+    branch: shell.branch,
+    worktreePath: shell.worktreePath,
+    latestTurn: shell.latestTurn,
+    createdAt: shell.createdAt,
+    updatedAt: shell.updatedAt,
+    archivedAt: shell.archivedAt,
+    session: shell.session,
+  };
+}
 
 export function createEnvironmentThreadDetailAtoms<E>(
   threadStateAtom: (

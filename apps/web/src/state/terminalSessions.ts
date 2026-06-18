@@ -2,6 +2,7 @@ import {
   combineTerminalSessionState,
   EMPTY_TERMINAL_BUFFER_STATE,
   EMPTY_TERMINAL_SESSION_STATE,
+  selectRunningSubprocessTerminalIds,
   type KnownTerminalSession,
   type TerminalSessionState,
 } from "@t3tools/client-runtime/state/terminal";
@@ -85,7 +86,5 @@ export function useThreadRunningTerminalIds(input: {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId | null;
 }): ReadonlyArray<string> {
-  return useKnownTerminalSessions(input)
-    .filter((session) => session.state.status === "running")
-    .map((session) => session.target.terminalId);
+  return selectRunningSubprocessTerminalIds(useKnownTerminalSessions(input));
 }

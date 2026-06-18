@@ -76,7 +76,7 @@ import {
   useVcsInitAction,
   useVcsPullAction,
 } from "~/lib/sourceControlActions";
-import { useThreadDetail } from "~/state/entities";
+import { useThread } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { sourceControlEnvironment } from "~/state/sourceControl";
@@ -135,6 +135,22 @@ interface RunGitActionWithToastInput {
 }
 
 const GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS = 250;
+
+type RefreshVcsStatus = (target: {
+  readonly environmentId: ScopedThreadRef["environmentId"];
+  readonly input: { readonly cwd: string };
+}) => Promise<unknown>;
+
+function requestVcsStatusRefresh(
+  refresh: RefreshVcsStatus,
+  environmentId: ScopedThreadRef["environmentId"] | null,
+  cwd: string | null,
+): void {
+  if (environmentId === null || cwd === null) {
+    return;
+  }
+  void refresh({ environmentId, input: { cwd } });
+}
 const RUNNING_SOURCE_CONTROL_ACTIONS = ["runStackedAction", "pull", "publishRepository"] as const;
 
 const PUBLISH_PROVIDER_OPTIONS = [
@@ -363,8 +379,9 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
           input: {},
         }),
   );
-  const [publishProvider, setPublishProvider] = useState<PublishProviderKind>("github");
-  const [publishRepository, setPublishRepository] = useState("");
+  const [selectedPublishProvider, setSelectedPublishProvider] =
+    useState<PublishProviderKind | null>(null);
+  const [publishRepositoryOverride, setPublishRepositoryOverride] = useState<string | null>(null);
   const [publishVisibility, setPublishVisibility] =
     useState<SourceControlRepositoryVisibility>("private");
   const [publishRemoteName, setPublishRemoteName] = useState("origin");
@@ -375,7 +392,6 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const [publishResult, setPublishResult] = useState<SourceControlPublishRepositoryResult | null>(
     null,
   );
-  const [hasUserEditedPublishRepository, setHasUserEditedPublishRepository] = useState(false);
   const sourceControlScope = useMemo(
     () => ({
       environmentId: props.environmentId,
@@ -426,10 +442,18 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
       }),
     [publishProviderReadiness],
   );
+  const firstReadyPublishProvider = sortedPublishProviderOptions.find(
+    (option) => publishProviderReadiness[option.value].ready,
+  )?.value;
+  const publishProvider =
+    selectedPublishProvider !== null && publishProviderReadiness[selectedPublishProvider].ready
+      ? selectedPublishProvider
+      : (firstReadyPublishProvider ?? selectedPublishProvider ?? "github");
   const selectedPublishProviderReadiness = publishProviderReadiness[publishProvider];
   const publishRepositoryPrefill = publishAccountByProvider[publishProvider]
     ? `${publishAccountByProvider[publishProvider]}/`
     : "";
+  const publishRepository = publishRepositoryOverride ?? publishRepositoryPrefill;
   const currentPublishProvider = publishProviderOption(publishProvider);
   const publishHost = currentPublishProvider.host;
   const publishPathPlaceholder = currentPublishProvider.pathPlaceholder;
@@ -441,13 +465,6 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     null,
   ] as const;
 
-  useEffect(() => {
-    if (!props.open || hasUserEditedPublishRepository) {
-      return;
-    }
-    setPublishRepository(publishRepositoryPrefill);
-  }, [hasUserEditedPublishRepository, props.open, publishRepositoryPrefill]);
-
   const canSubmitPublishRepository = useMemo(() => {
     if (!selectedPublishProviderReadiness.ready) return false;
     if (publishRepositoryAction.isPending) return false;
@@ -457,21 +474,6 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
     const name = rest.join("/").trim();
     return owner.length > 0 && name.length > 0;
   }, [publishRepository, publishRepositoryAction.isPending, selectedPublishProviderReadiness]);
-
-  useEffect(() => {
-    if (!props.open) {
-      return;
-    }
-    if (publishProviderReadiness[publishProvider].ready) {
-      return;
-    }
-    const firstReadyProvider = PUBLISH_PROVIDER_OPTIONS.find(
-      (option) => publishProviderReadiness[option.value].ready,
-    );
-    if (firstReadyProvider) {
-      setPublishProvider(firstReadyProvider.value);
-    }
-  }, [props.open, publishProvider, publishProviderReadiness]);
 
   const submitPublishRepository = useCallback(() => {
     if (!canSubmitPublishRepository) {
@@ -516,8 +518,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
 
   const resetState = useCallback(() => {
     setPublishRemoteName("origin");
-    setPublishRepository("");
-    setHasUserEditedPublishRepository(false);
+    setPublishRepositoryOverride(null);
     setPublishWizardStep(0);
     setPublishAdvancedOpen(false);
     setPublishError(null);
@@ -610,7 +611,10 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                 </span>
                 <RadioGroup
                   value={publishProvider}
-                  onValueChange={(value) => setPublishProvider(value as PublishProviderKind)}
+                  onValueChange={(value) => {
+                    setSelectedPublishProvider(value as PublishProviderKind);
+                    setPublishRepositoryOverride(null);
+                  }}
                   aria-labelledby="publish-provider-cards-label"
                   className="grid grid-cols-2 gap-2.5"
                 >
@@ -696,8 +700,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
                       name="publish-repository-path"
                       value={publishRepository}
                       onChange={(event) => {
-                        setPublishRepository(event.target.value);
-                        setHasUserEditedPublishRepository(true);
+                        setPublishRepositoryOverride(event.target.value);
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
@@ -981,7 +984,7 @@ export default function GitActionsControl({
     () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
     [activeThreadRef],
   );
-  const activeServerThread = useThreadDetail(activeThreadRef);
+  const activeServerThread = useThread(activeThreadRef);
   const activeDraftThread = useComposerDraftStore((store) =>
     draftId
       ? store.getDraftSession(draftId)
@@ -1081,6 +1084,9 @@ export default function GitActionsControl({
         })
       : null,
   );
+  const refreshVcsStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+    reportFailure: false,
+  });
   const { data: gitStatus, error: gitStatusError } = gitStatusQuery;
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(gitStatus?.sourceControlProvider),
@@ -1183,7 +1189,7 @@ export default function GitActionsControl({
       }
       refreshTimeout = window.setTimeout(() => {
         refreshTimeout = null;
-        gitStatusQuery.refresh();
+        requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
       }, GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS);
     };
     const handleVisibilityChange = () => {
@@ -1202,7 +1208,7 @@ export default function GitActionsControl({
       window.removeEventListener("focus", scheduleRefreshCurrentGitStatus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [gitCwd, gitStatusQuery.refresh]);
+  }, [activeEnvironmentId, gitCwd, refreshVcsStatus]);
 
   const openExistingPr = useCallback(async () => {
     const api = readLocalApi();
@@ -1719,7 +1725,7 @@ export default function GitActionsControl({
           <Menu
             onOpenChange={(open) => {
               if (open) {
-                gitStatusQuery.refresh();
+                requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
               }
             }}
           >

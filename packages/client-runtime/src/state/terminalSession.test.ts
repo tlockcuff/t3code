@@ -7,6 +7,7 @@ import {
   applyTerminalMetadataStreamEvent,
   combineTerminalSessionState,
   EMPTY_TERMINAL_BUFFER_STATE,
+  selectRunningSubprocessTerminalIds,
 } from "./terminalSession.ts";
 
 const TARGET = {
@@ -86,6 +87,26 @@ describe("terminal session reducers", () => {
     expect(combineTerminalSessionState(summary, EMPTY_TERMINAL_BUFFER_STATE).status).toBe(
       "running",
     );
+  });
+
+  it("does not treat an idle running shell as a running subprocess", () => {
+    const idleSession = {
+      target: TARGET,
+      state: {
+        ...combineTerminalSessionState(null, EMPTY_TERMINAL_BUFFER_STATE),
+        status: "running" as const,
+        hasRunningSubprocess: false,
+      },
+    };
+    const activeSession = {
+      target: { ...TARGET, terminalId: "term-2" },
+      state: {
+        ...idleSession.state,
+        hasRunningSubprocess: true,
+      },
+    };
+
+    expect(selectRunningSubprocessTerminalIds([idleSession, activeSession])).toEqual(["term-2"]);
   });
 
   it("reduces attach snapshots and output without an imperative session manager", () => {

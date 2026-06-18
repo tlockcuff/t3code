@@ -16,6 +16,7 @@ import { EMPTY_ENVIRONMENT_THREAD_STATE, type EnvironmentThreadState } from "./t
 import { createEnvironmentProjectAtoms } from "./projectEntities.ts";
 import { createEnvironmentSnapshotAtom } from "./snapshots.ts";
 import { createEnvironmentThreadDetailAtoms } from "./threadDetail.ts";
+import { mergeEnvironmentThread } from "./threadDetail.ts";
 import { createEnvironmentThreadShellAtoms } from "./threadShell.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
@@ -136,6 +137,38 @@ function makeHarness() {
 }
 
 describe("environment entity projections", () => {
+  it("composes detail collections with authoritative shell workspace metadata", () => {
+    const messages: OrchestrationThread["messages"] = [];
+    const detail = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      title: "Cached thread",
+      branch: "stale-branch",
+      worktreePath: "/repo/stale-worktree",
+      deletedAt: null,
+      messages,
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+    } satisfies OrchestrationThread & { readonly environmentId: EnvironmentId };
+    const shell = {
+      ...THREAD_SHELL,
+      environmentId: ENVIRONMENT_ID,
+      title: "Current thread",
+      branch: "current-branch",
+      worktreePath: "/repo/current-worktree",
+    };
+
+    const merged = mergeEnvironmentThread(detail, shell);
+
+    expect(merged).toMatchObject({
+      title: "Current thread",
+      branch: "current-branch",
+      worktreePath: "/repo/current-worktree",
+    });
+    expect(merged?.messages).toBe(messages);
+  });
+
   it("preserves untouched project and thread identities across unrelated shell updates", () => {
     const harness = makeHarness();
     const projectRefsAtom = harness.projects.environmentProjectRefsAtom(ENVIRONMENT_ID);

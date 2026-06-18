@@ -818,35 +818,6 @@ function OpenCommandPaletteDialog() {
     [browseEnvironmentId, buildAddProjectSourceGroups, sourceControlDiscovery.data],
   );
 
-  useEffect(() => {
-    if (addProjectEnvironmentId === null) {
-      return;
-    }
-    sourceControlDiscovery.refresh();
-  }, [addProjectEnvironmentId, sourceControlDiscovery.refresh]);
-
-  useEffect(() => {
-    if (addProjectEnvironmentId === null || sourceControlDiscovery.data === null) {
-      return;
-    }
-    setViewStack((previousViews) => {
-      const currentTopView = previousViews.at(-1);
-      if (currentTopView?.groups[0]?.value !== `sources:${addProjectEnvironmentId}`) {
-        return previousViews;
-      }
-      return [
-        ...previousViews.slice(0, -1),
-        {
-          addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
-          groups: buildAddProjectSourceGroups(
-            addProjectEnvironmentId,
-            buildAddProjectRemoteSourceReadiness(sourceControlDiscovery.data),
-          ),
-        },
-      ];
-    });
-  }, [addProjectEnvironmentId, buildAddProjectSourceGroups, sourceControlDiscovery.data]);
-
   const addProjectEnvironmentItems: CommandPaletteActionItem[] = addProjectEnvironmentOptions.map(
     (option) => ({
       kind: "action",
@@ -993,7 +964,17 @@ function OpenCommandPaletteDialog() {
   });
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
-  const activeGroups = currentView ? currentView.groups : rootGroups;
+  const sourceSelectionViewValue =
+    addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
+  const activeGroups =
+    addProjectEnvironmentId !== null &&
+    currentView !== null &&
+    currentView.groups[0]?.value === sourceSelectionViewValue
+      ? buildAddProjectSourceGroups(
+          addProjectEnvironmentId,
+          buildAddProjectRemoteSourceReadiness(sourceControlDiscovery.data),
+        )
+      : (currentView?.groups ?? rootGroups);
 
   const filteredGroups = filterCommandPaletteGroups({
     activeGroups,

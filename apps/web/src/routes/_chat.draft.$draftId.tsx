@@ -9,7 +9,7 @@ import {
 } from "../composerDraftStore";
 import { SidebarInset } from "../components/ui/sidebar";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { useThreadDetail, useThreadRefs } from "../state/entities";
+import { useThread, useThreadRefs } from "../state/entities";
 
 function DraftChatThreadRouteView() {
   const navigate = useNavigate();
@@ -25,7 +25,7 @@ function DraftChatThreadRouteView() {
       ) ?? null)
     : null;
   const serverThreadRef = draftSession?.promotedTo ?? inferredThreadRef;
-  const serverThread = useThreadDetail(serverThreadRef);
+  const serverThread = useThread(serverThreadRef);
   const serverThreadStarted = threadHasStarted(serverThread);
   const canonicalThreadRef = serverThreadStarted ? serverThreadRef : null;
 

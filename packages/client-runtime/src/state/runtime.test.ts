@@ -359,8 +359,8 @@ describe("runtime command runner", () => {
     secondLatch.openUnsafe();
     firstLatch.openUnsafe();
 
-    expect(await first).toEqual(AsyncResult.success("first"));
-    expect(await second).toEqual(AsyncResult.success("second"));
+    expect(await first).toMatchObject({ _tag: "Success", value: "first", waiting: false });
+    expect(await second).toMatchObject({ _tag: "Success", value: "second", waiting: false });
     registry.dispose();
   });
 
@@ -415,8 +415,8 @@ describe("runtime command runner", () => {
     const second = command.run(registry, "same");
     latch.openUnsafe();
 
-    expect(await first).toEqual(AsyncResult.success("done"));
-    expect(await second).toEqual(AsyncResult.success("done"));
+    expect(await first).toMatchObject({ _tag: "Success", value: "done", waiting: false });
+    expect(await second).toMatchObject({ _tag: "Success", value: "done", waiting: false });
     expect(executions).toBe(1);
     registry.dispose();
   });
@@ -442,9 +442,9 @@ describe("runtime command runner", () => {
     const third = command.run(registry, 3);
     firstLatch.openUnsafe();
 
-    expect(await first).toEqual(AsyncResult.success(1));
-    expect(await second).toEqual(AsyncResult.success(3));
-    expect(await third).toEqual(AsyncResult.success(3));
+    expect(await first).toMatchObject({ _tag: "Success", value: 1, waiting: false });
+    expect(await second).toMatchObject({ _tag: "Success", value: 3, waiting: false });
+    expect(await third).toMatchObject({ _tag: "Success", value: 3, waiting: false });
     expect(executed).toEqual([1, 3]);
     registry.dispose();
   });
