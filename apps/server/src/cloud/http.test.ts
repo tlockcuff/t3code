@@ -1,17 +1,27 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Tracer from "effect/Tracer";
-import { HttpClient, HttpServerRequest } from "effect/unstable/http";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientError from "effect/unstable/http/HttpClientError";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
-import { consumeCloudReplayGuards, reconcileDesiredCloudLink } from "./http.ts";
+import {
+  CloudRelayRequestError,
+  consumeCloudReplayGuards,
+  reconcileDesiredCloudLink,
+} from "./http.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import { traceAuthenticatedRelayRequest, traceRelayRequest } from "./traceRelayRequest.ts";
 
@@ -40,6 +50,55 @@ function makeSecretStore(
     getOrCreateRandom: unusedSecretStoreOperation,
     remove: unusedSecretStoreOperation,
   };
+}
+
+function reconcileWith(input: {
+  readonly getExisting: CliTokenManager.CloudCliTokenManager["Service"]["getExisting"];
+  readonly httpClient?: HttpClient.HttpClient;
+  readonly env?: Readonly<Record<string, string>>;
+}) {
+  return reconcileDesiredCloudLink("http://127.0.0.1:3774").pipe(
+    Effect.provideService(
+      ServerSecretStore.ServerSecretStore,
+      makeSecretStore(unusedSecretStoreOperation),
+    ),
+    Effect.provideService(
+      ServerEnvironment.ServerEnvironment,
+      ServerEnvironment.ServerEnvironment.of({
+        getEnvironmentId: unusedSecretStoreOperation(),
+        getDescriptor: unusedSecretStoreOperation(),
+      }),
+    ),
+    Effect.provideService(
+      ManagedEndpointRuntime.CloudManagedEndpointRuntime,
+      ManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+        applyConfig: unusedSecretStoreOperation,
+      } satisfies ManagedEndpointRuntime.CloudManagedEndpointRuntime["Service"]),
+    ),
+    Effect.provideService(
+      EnvironmentAuth.EnvironmentAuth,
+      EnvironmentAuth.EnvironmentAuth.of({} as EnvironmentAuth.EnvironmentAuth["Service"]),
+    ),
+    Effect.provideService(
+      CliTokenManager.CloudCliTokenManager,
+      CliTokenManager.CloudCliTokenManager.of({
+        get: unusedSecretStoreOperation(),
+        getExisting: input.getExisting,
+        hasCredential: unusedSecretStoreOperation(),
+        clear: unusedSecretStoreOperation(),
+      }),
+    ),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      input.httpClient ?? HttpClient.make(() => unusedSecretStoreOperation()),
+    ),
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env ?? {} })),
+      ),
+    ),
+  );
 }
 
 it("preserves messages surfaced by cloud 500 responses", () => {
@@ -93,6 +152,45 @@ describe("consumeCloudReplayGuards", () => {
       expect(error).toBe(failure);
     }),
   );
+});
+
+describe("CloudRelayRequestError", () => {
+  it("classifies response failures without deriving its message from the cause", () => {
+    const request = HttpClientRequest.post(
+      "https://relay.example.test/v1/client/environment-links",
+    );
+    const response = HttpClientResponse.fromWeb(
+      request,
+      new Response("sensitive upstream response", { status: 502 }),
+    );
+    const upstreamCause = new Error("sensitive upstream response details");
+    const cause = new HttpClientError.HttpClientError({
+      reason: new HttpClientError.StatusCodeError({
+        request,
+        response,
+        cause: upstreamCause,
+      }),
+    });
+
+    const error = CloudRelayRequestError.fromClientFailure({
+      operation: "create-environment-link",
+      url: request.url,
+      cause,
+    });
+
+    expect(error).toMatchObject({
+      operation: "create-environment-link",
+      phase: "check-response-status",
+      method: "POST",
+      url: request.url,
+      responseStatus: 502,
+      cause,
+    });
+    expect(error.message).toBe(
+      "T3 Connect relay create-environment-link failed during check-response-status with response status 502.",
+    );
+    expect(error.message).not.toContain(upstreamCause.message);
+  });
 });
 
 describe("relay request tracing", () => {
@@ -162,48 +260,47 @@ describe("relay request tracing", () => {
 describe("reconcileDesiredCloudLink", () => {
   it.effect("requires stored CLI authorization without exposing an HTTP endpoint", () =>
     Effect.gen(function* () {
-      const error = yield* Effect.flip(reconcileDesiredCloudLink("http://127.0.0.1:3774"));
+      const error = yield* Effect.flip(
+        reconcileWith({ getExisting: Effect.succeed(Option.none()) }),
+      );
 
       expect(error).toMatchObject({
         _tag: "EnvironmentHttpUnauthorizedError",
         message: "Run `t3 connect link` to authorize this environment.",
       });
-    }).pipe(
-      Effect.provideService(
-        ServerSecretStore.ServerSecretStore,
-        makeSecretStore(unusedSecretStoreOperation),
-      ),
-      Effect.provideService(
-        ServerEnvironment.ServerEnvironment,
-        ServerEnvironment.ServerEnvironment.of({
-          getEnvironmentId: unusedSecretStoreOperation(),
-          getDescriptor: unusedSecretStoreOperation(),
-        }),
-      ),
-      Effect.provideService(
-        ManagedEndpointRuntime.CloudManagedEndpointRuntime,
-        ManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
-          applyConfig: unusedSecretStoreOperation,
-        } satisfies ManagedEndpointRuntime.CloudManagedEndpointRuntime["Service"]),
-      ),
-      Effect.provideService(
-        EnvironmentAuth.EnvironmentAuth,
-        EnvironmentAuth.EnvironmentAuth.of({} as EnvironmentAuth.EnvironmentAuth["Service"]),
-      ),
-      Effect.provideService(
-        CliTokenManager.CloudCliTokenManager,
-        CliTokenManager.CloudCliTokenManager.of({
-          get: unusedSecretStoreOperation(),
-          getExisting: Effect.succeed(Option.none()),
-          hasCredential: unusedSecretStoreOperation(),
-          clear: unusedSecretStoreOperation(),
-        }),
-      ),
-      Effect.provideService(
-        HttpClient.HttpClient,
-        HttpClient.make(() => unusedSecretStoreOperation()),
-      ),
-      Effect.provide(NodeServices.layer),
-    ),
+    }),
   );
+
+  it.effect("redacts relay transport failures behind a stable structural message", () => {
+    const transportCause = new Error("upstream included a sensitive database password");
+    const httpClient = HttpClient.make((request) =>
+      Effect.fail(
+        new HttpClientError.HttpClientError({
+          reason: new HttpClientError.TransportError({ request, cause: transportCause }),
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        reconcileWith({
+          getExisting: Effect.succeed(
+            Option.some({
+              accessToken: "access-token",
+              refreshToken: "refresh-token",
+              expiresAtEpochMs: Number.MAX_SAFE_INTEGER,
+            }),
+          ),
+          httpClient,
+          env: { T3CODE_RELAY_URL: "https://relay.example.test" },
+        }),
+      );
+
+      expect(error).toMatchObject({
+        _tag: "EnvironmentHttpInternalServerError",
+        message: "T3 Connect relay create-link-challenge failed during send-request.",
+      });
+      expect(error.message).not.toContain(transportCause.message);
+    });
+  });
 });
