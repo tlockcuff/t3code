@@ -363,7 +363,8 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         groupedEntries,
         turnInProgress:
-          unsettledTurnId !== null && groupedEntries.some((entry) => entry.turnId === unsettledTurnId),
+          unsettledTurnId !== null &&
+          groupedEntries.some((entry) => entry.turnId === unsettledTurnId),
       });
       index = cursor - 1;
       continue;
