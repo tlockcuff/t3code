@@ -1354,6 +1354,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           stream: "native",
         })
       : undefined);
+  const managedNativeEventLogger =
+    options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
   const createQuery =
     options?.createQuery ??
@@ -3843,6 +3845,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         Effect.logError("Failed to emit Claude session shutdown event.", { cause }),
       ),
       Effect.tap(() => Queue.shutdown(runtimeEventQueue)),
+      Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
     ),
   );
 
