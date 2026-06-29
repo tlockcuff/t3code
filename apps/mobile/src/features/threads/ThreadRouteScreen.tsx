@@ -43,7 +43,7 @@ import {
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen } from "./ThreadDetailScreen";
-import { ThreadGitControls } from "./ThreadGitControls";
+import { ThreadGitControls, useThreadGitRightHeaderItems } from "./ThreadGitControls";
 import { GitOverviewSheet } from "./git/GitOverviewSheet";
 import { ThreadNavigationDrawer } from "./ThreadNavigationDrawer";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -248,9 +248,6 @@ function ThreadRouteContent(
         return null;
       }
       return inspectorSelection.mode;
-    }
-    if (fileInspector.supported && selectedThreadCwd !== null) {
-      return "files";
     }
     return null;
   })();
@@ -596,6 +593,33 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
+  const threadGitControlProps = {
+    auxiliaryPaneControl:
+      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
+        ? {
+            accessibilityLabel: "Toggle inspector",
+            onPress: handleToggleInspector,
+          }
+        : undefined,
+    onOpenFilesInspector:
+      fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
+    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+    currentBranch: selectedThread?.branch ?? null,
+    gitStatus: gitStatus.data,
+    gitOperationLabel: gitState.gitOperationLabel,
+    canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
+    canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
+    projectScripts: selectedThreadProject?.scripts ?? [],
+    terminalSessions: terminalMenuSessions,
+    showDirectFileControl: layout.usesSplitView,
+    showSearchSlot: false,
+    onOpenTerminal: handleOpenTerminal,
+    onOpenNewTerminal: handleOpenNewTerminal,
+    onRunProjectScript: handleRunProjectScript,
+    onPull: gitActions.onPullSelectedThreadBranch,
+    onRunAction: gitActions.onRunSelectedThreadGitAction,
+  };
+  const threadRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
 
   if (!environmentId || !threadId) {
     return <OpeningThreadLoadingScreen />;
@@ -646,6 +670,10 @@ function ThreadRouteContent(
                 placement: "integratedButton",
               }
             : undefined,
+          unstable_headerRightItems:
+            layout.usesSplitView && Platform.OS === "ios" && !activeInspectorRenderer
+              ? () => threadRightHeaderItems
+              : undefined,
           unstable_navigationItemStyle: usesNativeHeaderGlass ? "editor" : undefined,
         }}
       />
@@ -678,36 +706,7 @@ function ThreadRouteContent(
         ) : null}
       </WorkspaceSidebarToolbar>
 
-      <ThreadGitControls
-        auxiliaryPaneControl={
-          !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
-            ? {
-                accessibilityLabel: "Toggle inspector",
-                onPress: handleToggleInspector,
-              }
-            : undefined
-        }
-        onOpenFilesInspector={
-          fileInspector.supported && selectedThreadCwd !== null
-            ? handleOpenFilesInspector
-            : undefined
-        }
-        onOpenGitInspector={fileInspector.supported ? handleOpenGitInspector : undefined}
-        currentBranch={selectedThread.branch}
-        gitStatus={gitStatus.data}
-        gitOperationLabel={gitState.gitOperationLabel}
-        canOpenTerminal={Boolean(selectedThreadProject?.workspaceRoot)}
-        canOpenFiles={Boolean(selectedThreadProject?.workspaceRoot)}
-        projectScripts={selectedThreadProject?.scripts ?? []}
-        terminalSessions={terminalMenuSessions}
-        showDirectFileControl={layout.usesSplitView}
-        showSearchSlot={layout.usesSplitView}
-        onOpenTerminal={handleOpenTerminal}
-        onOpenNewTerminal={handleOpenNewTerminal}
-        onRunProjectScript={handleRunProjectScript}
-        onPull={gitActions.onPullSelectedThreadBranch}
-        onRunAction={gitActions.onRunSelectedThreadGitAction}
-      />
+      <ThreadGitControls {...threadGitControlProps} showActionControls={!layout.usesSplitView} />
 
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
 

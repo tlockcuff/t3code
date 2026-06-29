@@ -61,7 +61,7 @@ index 69d4d9a4704a7bef3fa207de2dbb2d5119846ccb..6192c4a23b1ce08cc2a085c5e7fb0f4a
  
  - (UIEdgeInsets)providerSafeAreaInsets
 diff --git a/ios/RNSScreenStackHeaderConfig.h b/ios/RNSScreenStackHeaderConfig.h
-index 919b984edc9f91ee9ac26faf257d8a721e26457c..3f54fad0a22d37bb7542679ae9d14088b14d07e3 100644
+index 919b984edc9f91ee9ac26faf257d8a721e26457c..5bb0cd6736ed6bc51db57e2a9326f758f22c51d8 100644
 --- a/ios/RNSScreenStackHeaderConfig.h
 +++ b/ios/RNSScreenStackHeaderConfig.h
 @@ -21,6 +21,8 @@
@@ -73,7 +73,7 @@ index 919b984edc9f91ee9ac26faf257d8a721e26457c..3f54fad0a22d37bb7542679ae9d14088
  @property (nonatomic, retain) NSString *titleFontFamily;
  @property (nonatomic, retain) NSNumber *titleFontSize;
  @property (nonatomic, retain) NSString *titleFontWeight;
-@@ -45,9 +47,11 @@ NS_ASSUME_NONNULL_BEGIN
+@@ -45,9 +47,12 @@ NS_ASSUME_NONNULL_BEGIN
  @property (nonatomic) BOOL backButtonInCustomView;
  @property (nonatomic) UISemanticContentAttribute direction;
  @property (nonatomic) UINavigationItemBackButtonDisplayMode backButtonDisplayMode;
@@ -81,12 +81,13 @@ index 919b984edc9f91ee9ac26faf257d8a721e26457c..3f54fad0a22d37bb7542679ae9d14088
  @property (nonatomic) RNSBlurEffectStyle blurEffect;
  @property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerRightBarButtonItems;
  @property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerLeftBarButtonItems;
++@property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerCenterBarButtonItems;
 +@property (nonatomic, copy, nullable) NSArray<NSDictionary<NSString *, id> *> *headerToolbarItems;
  @property (nonatomic, readwrite) BOOL synchronousShadowStateUpdatesEnabled;
  
  NS_ASSUME_NONNULL_END
 diff --git a/ios/RNSScreenStackHeaderConfig.mm b/ios/RNSScreenStackHeaderConfig.mm
-index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be58629a26 100644
+index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f4f19bdb2 100644
 --- a/ios/RNSScreenStackHeaderConfig.mm
 +++ b/ios/RNSScreenStackHeaderConfig.mm
 @@ -30,6 +30,20 @@ namespace react = facebook::react;
@@ -159,7 +160,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
  
  // appearance does not apply to the tvOS so we need to use lagacy customization
  #if TARGET_OS_TV
-@@ -637,10 +667,229 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -637,10 +667,235 @@ RNS_IGNORE_SUPER_CALL_END
    // This assignment should be done after `navitem.titleView = ...` assignment (iOS 16.0 bug).
    // See: https://github.com/software-mansion/react-native-screens/issues/1570 (comments)
    navitem.title = config.title;
@@ -173,10 +174,16 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
 +  NSArray<UIBarButtonItem *> *rightBarButtonItems = [config barButtonItemsFromConfigs:config.headerRightBarButtonItems
 +                                                                     withCurrentItems:navitem.rightBarButtonItems
 +                                                                       navigationItem:navitem];
++  NSArray<UIBarButtonItem *> *centerBarButtonItems = [config barButtonItemsFromConfigs:config.headerCenterBarButtonItems
++                                                                      withCurrentItems:@[]
++                                                                        navigationItem:navitem];
 +#if !TARGET_OS_TV
 +  if (@available(iOS 16.0, *)) {
 +    navitem.leadingItemGroups = [config barButtonItemGroupsFromItems:leftBarButtonItems];
 +    navitem.trailingItemGroups = [config barButtonItemGroupsFromItems:rightBarButtonItems];
++    if (@available(iOS 26.0, *)) {
++      navitem.centerItemGroups = [config barButtonItemGroupsFromItems:centerBarButtonItems];
++    }
 +    navitem.leftBarButtonItems = nil;
 +    navitem.rightBarButtonItems = nil;
 +  } else {
@@ -393,7 +400,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
  
    // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items
    // (setting nav bar visibility should be done after `navitem.*BarButtonItems`).
-@@ -773,6 +1022,7 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -773,6 +1028,7 @@ RNS_IGNORE_SUPER_CALL_END
  
  - (NSArray<UIBarButtonItem *> *)barButtonItemsFromConfigs:(NSArray<NSDictionary<NSString *, id> *> *)dicts
                                           withCurrentItems:(NSArray<UIBarButtonItem *> *)currentItems
@@ -401,7 +408,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
  {
    if (dicts.count == 0) {
      return currentItems;
-@@ -781,7 +1031,190 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -781,7 +1037,190 @@ RNS_IGNORE_SUPER_CALL_END
    [items addObjectsFromArray:currentItems];
    for (NSUInteger i = 0; i < dicts.count; i++) {
      NSDictionary *dict = dicts[i];
@@ -593,7 +600,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
        RNSBarButtonItem *item = [[RNSBarButtonItem alloc] initWithConfig:dict
            action:^(NSString *buttonId) {
              auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
-@@ -809,11 +1242,15 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -809,11 +1248,15 @@ RNS_IGNORE_SUPER_CALL_END
          [items addObject:item];
        }
      } else if (dict[@"spacing"]) {
@@ -613,7 +620,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
        NSNumber *index = dict[@"index"];
        if (index.integerValue < items.count) {
          [items insertObject:item atIndex:index.integerValue];
-@@ -825,6 +1262,47 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -825,6 +1268,47 @@ RNS_IGNORE_SUPER_CALL_END
    return items;
  }
  
@@ -661,7 +668,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
  RNS_IGNORE_SUPER_CALL_BEGIN
  - (void)insertReactSubview:(RNSScreenStackHeaderSubview *)subview atIndex:(NSInteger)atIndex
  {
-@@ -1013,6 +1491,8 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1013,6 +1497,8 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
    }
  
    _title = RCTNSStringFromStringNilIfEmpty(newScreenProps.title);
@@ -670,7 +677,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
    if (newScreenProps.titleFontFamily != oldScreenProps.titleFontFamily) {
      _titleFontFamily = RCTNSStringFromStringNilIfEmpty(newScreenProps.titleFontFamily);
    }
-@@ -1038,6 +1518,7 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1038,6 +1524,7 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
    _disableBackButtonMenu = newScreenProps.disableBackButtonMenu;
    _backButtonDisplayMode =
        [RNSConvert UINavigationItemBackButtonDisplayModeFromCppEquivalent:newScreenProps.backButtonDisplayMode];
@@ -678,10 +685,22 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..ec3d02cf912fe0e617ed593e321177be
  
    if (newScreenProps.userInterfaceStyle != oldScreenProps.userInterfaceStyle) {
      _userInterfaceStyle = [RNSConvert UIUserInterfaceStyleFromCppEquivalent:newScreenProps.userInterfaceStyle];
-@@ -1084,6 +1565,18 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1084,6 +1571,30 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
      _headerRightBarButtonItems = array;
    }
  
++  if (newScreenProps.headerCenterBarButtonItems != oldScreenProps.headerCenterBarButtonItems) {
++    const auto &vec = newScreenProps.headerCenterBarButtonItems;
++    NSMutableArray<NSDictionary<NSString *, id> *> *array = [NSMutableArray arrayWithCapacity:vec.size()];
++    for (const auto &item : vec) {
++      NSDictionary *dict = [RNSConvert idFromFollyDynamic:item];
++      if ([dict isKindOfClass:[NSDictionary class]]) {
++        [array addObject:dict];
++      }
++    }
++    _headerCenterBarButtonItems = array;
++  }
++
 +  if (newScreenProps.headerToolbarItems != oldScreenProps.headerToolbarItems) {
 +    const auto &vec = newScreenProps.headerToolbarItems;
 +    NSMutableArray<NSDictionary<NSString *, id> *> *array = [NSMutableArray arrayWithCapacity:vec.size()];
@@ -770,28 +789,30 @@ index 52c61c863c53c289569a741445ed08c0355d95ba..cb4d6be752f98e06dfd3b40453c2bd88
  
  #pragma mark - Override
 diff --git a/lib/commonjs/components/ScreenStackHeaderConfig.js b/lib/commonjs/components/ScreenStackHeaderConfig.js
-index 16b979bb3dfb41ff247403f1632c300a9a60d549..67f52f105966833884344553847f11d0b66e6a4e 100644
+index 16b979bb3dfb41ff247403f1632c300a9a60d549..ad1fdb273e09b344184a7013f4f1b038e84ed19d 100644
 --- a/lib/commonjs/components/ScreenStackHeaderConfig.js
 +++ b/lib/commonjs/components/ScreenStackHeaderConfig.js
-@@ -23,18 +23,40 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
+@@ -23,18 +23,42 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
    } = (0, _TopInsetApplicationContext.useTopInsetApplication)(!props.hidden, props.disableTopInsetApplication ?? false);
    const {
      headerLeftBarButtonItems,
 -    headerRightBarButtonItems
 +    headerRightBarButtonItems,
++    headerCenterBarButtonItems,
 +    headerToolbarItems
    } = props;
    const preparedHeaderLeftBarButtonItems = headerLeftBarButtonItems && _utils.isHeaderBarButtonsAvailableForCurrentPlatform ? (0, _prepareHeaderBarButtonItems.prepareHeaderBarButtonItems)(headerLeftBarButtonItems, 'left') : undefined;
    const preparedHeaderRightBarButtonItems = headerRightBarButtonItems && _utils.isHeaderBarButtonsAvailableForCurrentPlatform ? (0, _prepareHeaderBarButtonItems.prepareHeaderBarButtonItems)(headerRightBarButtonItems, 'right') : undefined;
 -  const hasHeaderBarButtonItems = _utils.isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length);
++  const preparedHeaderCenterBarButtonItems = headerCenterBarButtonItems && _utils.isHeaderBarButtonsAvailableForCurrentPlatform ? (0, _prepareHeaderBarButtonItems.prepareHeaderBarButtonItems)(headerCenterBarButtonItems, 'right') : undefined;
 +  const preparedHeaderToolbarItems = headerToolbarItems && _utils.isHeaderBarButtonsAvailableForCurrentPlatform ? (0, _prepareHeaderBarButtonItems.prepareHeaderBarButtonItems)(headerToolbarItems, 'right') : undefined;
-+  const hasHeaderBarButtonItems = _utils.isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length || preparedHeaderToolbarItems?.length);
++  const hasHeaderBarButtonItems = _utils.isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length || preparedHeaderCenterBarButtonItems?.length || preparedHeaderToolbarItems?.length);
  
    // Handle bar button item presses
    const onPressHeaderBarButtonItem = hasHeaderBarButtonItems ? event => {
 -    const pressedItem = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? [])].find(item => item && 'buttonId' in item && item.buttonId === event.nativeEvent.buttonId);
 +    const buttonId = event.nativeEvent.buttonId;
-+    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
++    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderCenterBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
 +    const pressedItem = allItems.find(item => item && 'buttonId' in item && item.buttonId === buttonId);
      if (pressedItem && pressedItem.type === 'button' && pressedItem.onPress) {
        pressedItem.onPress();
@@ -817,16 +838,16 @@ index 16b979bb3dfb41ff247403f1632c300a9a60d549..67f52f105966833884344553847f11d0
    } : undefined;
  
    // Handle bar button menu item presses by deep-searching nested menus
-@@ -56,7 +78,7 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
+@@ -56,7 +80,7 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
      };
  
      // Check each bar-button item with a menu
 -    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? [])];
-+    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
++    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderCenterBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
      for (const item of allItems) {
        if (item && item.type === 'menu' && item.menu) {
          const action = findInMenu(item.menu, event.nativeEvent.menuId);
-@@ -64,6 +86,15 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
+@@ -64,6 +88,15 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
            action.onPress();
            return;
          }
@@ -842,10 +863,11 @@ index 16b979bb3dfb41ff247403f1632c300a9a60d549..67f52f105966833884344553847f11d0
        }
      }
    } : undefined;
-@@ -71,6 +102,7 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
+@@ -71,6 +104,8 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
      userInterfaceStyle: props.experimental_userInterfaceStyle,
      headerLeftBarButtonItems: preparedHeaderLeftBarButtonItems,
      headerRightBarButtonItems: preparedHeaderRightBarButtonItems,
++    headerCenterBarButtonItems: preparedHeaderCenterBarButtonItems,
 +    headerToolbarItems: preparedHeaderToolbarItems,
      onPressHeaderBarButtonItem: onPressHeaderBarButtonItem,
      onPressHeaderBarButtonMenuItem: onPressHeaderBarButtonMenuItem,
@@ -918,28 +940,30 @@ index de25040bfec8587ca311f5a42661240640989419..bf73f41744e08bc60ffac09029419d19
  function _getRequireWildcardCache(e) { if ("function" != typeof WeakMap) return null; var r = new WeakMap(), t = new WeakMap(); return (_getRequireWildcardCache = function (e) { return e ? t : r; })(e); }
  function _interopRequireWildcard(e, r) { if (!r && e && e.__esModule) return e; if (null === e || "object" != typeof e && "function" != typeof e) return { default: e }; var t = _getRequireWildcardCache(r); if (t && t.has(e)) return t.get(e); var n = { __proto__: null }, a = Object.defineProperty && Object.getOwnPropertyDescriptor; for (var u in e) if ("default" !== u && {}.hasOwnProperty.call(e, u)) { var i = a ? Object.getOwnPropertyDescriptor(e, u) : null; i && (i.get || i.set) ? Object.defineProperty(n, u, i) : n[u] = e[u]; } return n.default = e, t && t.set(e, n), n; }
 diff --git a/lib/module/components/ScreenStackHeaderConfig.js b/lib/module/components/ScreenStackHeaderConfig.js
-index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..b1dfe857e0cf06c75088203a7f4157643af479b5 100644
+index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..3d995490fac910dfcc21e81ae965e31f24717c51 100644
 --- a/lib/module/components/ScreenStackHeaderConfig.js
 +++ b/lib/module/components/ScreenStackHeaderConfig.js
-@@ -19,18 +19,40 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
+@@ -19,18 +19,42 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
    } = useTopInsetApplication(!props.hidden, props.disableTopInsetApplication ?? false);
    const {
      headerLeftBarButtonItems,
 -    headerRightBarButtonItems
 +    headerRightBarButtonItems,
++    headerCenterBarButtonItems,
 +    headerToolbarItems
    } = props;
    const preparedHeaderLeftBarButtonItems = headerLeftBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform ? prepareHeaderBarButtonItems(headerLeftBarButtonItems, 'left') : undefined;
    const preparedHeaderRightBarButtonItems = headerRightBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform ? prepareHeaderBarButtonItems(headerRightBarButtonItems, 'right') : undefined;
 -  const hasHeaderBarButtonItems = isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length);
++  const preparedHeaderCenterBarButtonItems = headerCenterBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform ? prepareHeaderBarButtonItems(headerCenterBarButtonItems, 'right') : undefined;
 +  const preparedHeaderToolbarItems = headerToolbarItems && isHeaderBarButtonsAvailableForCurrentPlatform ? prepareHeaderBarButtonItems(headerToolbarItems, 'right') : undefined;
-+  const hasHeaderBarButtonItems = isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length || preparedHeaderToolbarItems?.length);
++  const hasHeaderBarButtonItems = isHeaderBarButtonsAvailableForCurrentPlatform && (preparedHeaderLeftBarButtonItems?.length || preparedHeaderRightBarButtonItems?.length || preparedHeaderCenterBarButtonItems?.length || preparedHeaderToolbarItems?.length);
  
    // Handle bar button item presses
    const onPressHeaderBarButtonItem = hasHeaderBarButtonItems ? event => {
 -    const pressedItem = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? [])].find(item => item && 'buttonId' in item && item.buttonId === event.nativeEvent.buttonId);
 +    const buttonId = event.nativeEvent.buttonId;
-+    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
++    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderCenterBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
 +    const pressedItem = allItems.find(item => item && 'buttonId' in item && item.buttonId === buttonId);
      if (pressedItem && pressedItem.type === 'button' && pressedItem.onPress) {
        pressedItem.onPress();
@@ -965,16 +989,16 @@ index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..b1dfe857e0cf06c75088203a7f415764
    } : undefined;
  
    // Handle bar button menu item presses by deep-searching nested menus
-@@ -52,7 +74,7 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
+@@ -52,7 +76,7 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
      };
  
      // Check each bar-button item with a menu
 -    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? [])];
-+    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
++    const allItems = [...(preparedHeaderLeftBarButtonItems ?? []), ...(preparedHeaderRightBarButtonItems ?? []), ...(preparedHeaderCenterBarButtonItems ?? []), ...(preparedHeaderToolbarItems ?? [])];
      for (const item of allItems) {
        if (item && item.type === 'menu' && item.menu) {
          const action = findInMenu(item.menu, event.nativeEvent.menuId);
-@@ -60,6 +82,15 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
+@@ -60,6 +84,15 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
            action.onPress();
            return;
          }
@@ -990,10 +1014,11 @@ index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..b1dfe857e0cf06c75088203a7f415764
        }
      }
    } : undefined;
-@@ -67,6 +98,7 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
+@@ -67,6 +100,8 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
      userInterfaceStyle: props.experimental_userInterfaceStyle,
      headerLeftBarButtonItems: preparedHeaderLeftBarButtonItems,
      headerRightBarButtonItems: preparedHeaderRightBarButtonItems,
++    headerCenterBarButtonItems: preparedHeaderCenterBarButtonItems,
 +    headerToolbarItems: preparedHeaderToolbarItems,
      onPressHeaderBarButtonItem: onPressHeaderBarButtonItem,
      onPressHeaderBarButtonMenuItem: onPressHeaderBarButtonMenuItem,
@@ -1047,7 +1072,7 @@ index 07caaf7f04c1d6484727b43b694ccf76b1988984..07fd7a57687797c5ae8f685ea70ccf98
  //# sourceMappingURL=index.js.map
 \ No newline at end of file
 diff --git a/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts b/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
-index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..45f16ef96ee86402c68a1b90edb4a71de05773a9 100644
+index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..9e3d310dea3a36d79ae7f5078ccc792ab9ff9979 100644
 --- a/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
 +++ b/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
 @@ -9,6 +9,7 @@ type OnPressHeaderBarButtonMenuItemEvent = Readonly<{
@@ -1058,7 +1083,7 @@ index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..45f16ef96ee86402c68a1b90edb4a71d
  type BlurEffect = 'none' | 'extraLight' | 'light' | 'dark' | 'regular' | 'prominent' | 'systemUltraThinMaterial' | 'systemThinMaterial' | 'systemMaterial' | 'systemThickMaterial' | 'systemChromeMaterial' | 'systemUltraThinMaterialLight' | 'systemThinMaterialLight' | 'systemMaterialLight' | 'systemThickMaterialLight' | 'systemChromeMaterialLight' | 'systemUltraThinMaterialDark' | 'systemThinMaterialDark' | 'systemMaterialDark' | 'systemThickMaterialDark' | 'systemChromeMaterialDark';
  type UserInterfaceStyle = 'unspecified' | 'light' | 'dark';
  export interface NativeProps extends ViewProps {
-@@ -32,18 +33,22 @@ export interface NativeProps extends ViewProps {
+@@ -32,18 +33,23 @@ export interface NativeProps extends ViewProps {
      largeTitleColor?: ColorValue | undefined;
      translucent?: boolean | undefined;
      title?: string | undefined;
@@ -1077,6 +1102,7 @@ index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..45f16ef96ee86402c68a1b90edb4a71d
      topInsetEnabled?: boolean | undefined;
      headerLeftBarButtonItems?: CT.UnsafeMixed[] | undefined;
      headerRightBarButtonItems?: CT.UnsafeMixed[] | undefined;
++    headerCenterBarButtonItems?: CT.UnsafeMixed[] | undefined;
 +    headerToolbarItems?: CT.UnsafeMixed[] | undefined;
      onPressHeaderBarButtonItem?: CT.DirectEventHandler<OnPressHeaderBarButtonItemEvent> | undefined;
      onPressHeaderBarButtonMenuItem?: CT.DirectEventHandler<OnPressHeaderBarButtonMenuItemEvent> | undefined;
@@ -1094,7 +1120,7 @@ index 8e4480f901d5d557244643a32341d46e9a497e68..883c5f264301058cbcd9090bee2702ee
  //# sourceMappingURL=index.d.ts.map
 \ No newline at end of file
 diff --git a/lib/typescript/types.d.ts b/lib/typescript/types.d.ts
-index 3b384e03891e38e936f370372a682d73440e7ec2..9834a915b66c1c5172a2e9aa423599ac4e6af1d8 100644
+index 3b384e03891e38e936f370372a682d73440e7ec2..66fe089401975016d2fb91b13e135940adf516cb 100644
 --- a/lib/typescript/types.d.ts
 +++ b/lib/typescript/types.d.ts
 @@ -10,6 +10,7 @@ export type SearchBarCommands = {
@@ -1120,10 +1146,20 @@ index 3b384e03891e38e936f370372a682d73440e7ec2..9834a915b66c1c5172a2e9aa423599ac
      /**
       * Array of UIBarButtomItems to the left side of the header.
       *
-@@ -643,6 +652,16 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
+@@ -643,6 +652,26 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
       * @platform ios
       */
      headerRightBarButtonItems?: HeaderBarButtonItem[] | undefined;
++    /**
++     * Array of UIBarButtonItems to the centered item group in modern iOS headers.
++     *
++     * This maps to `UINavigationItem.centerItemGroups` on iOS 26+ and lets
++     * document/editor-style chrome keep primary actions visually centered while
++     * leaving trailing search separate.
++     *
++     * @platform ios
++     */
++    headerCenterBarButtonItems?: HeaderBarButtonItem[] | undefined;
 +    /**
 +     * Array of UIBarButtonItems to display in the native toolbar attached to
 +     * the current screen's navigation controller.
@@ -1137,7 +1173,7 @@ index 3b384e03891e38e936f370372a682d73440e7ec2..9834a915b66c1c5172a2e9aa423599ac
      /**
       * When set to true the header will be hidden while the parent Screen is on the top of the stack. The default value is false.
       */
-@@ -704,6 +723,20 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
+@@ -704,6 +733,20 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
       * String that can be displayed in the header as a fallback for `headerTitle`.
       */
      title?: string | undefined;
@@ -1158,7 +1194,7 @@ index 3b384e03891e38e936f370372a682d73440e7ec2..9834a915b66c1c5172a2e9aa423599ac
      /**
       * Allows for setting text color of the title.
       */
-@@ -1145,8 +1178,37 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
+@@ -1145,8 +1188,37 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
  export interface HeaderBarButtonItemSpacing {
      type: 'spacing';
      spacing: number;
@@ -1198,10 +1234,10 @@ index 3b384e03891e38e936f370372a682d73440e7ec2..9834a915b66c1c5172a2e9aa423599ac
   * Custom Screen Transition
   */
 diff --git a/src/components/ScreenStackHeaderConfig.tsx b/src/components/ScreenStackHeaderConfig.tsx
-index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461f5d4da86 100644
+index 421b3c2545426ae957271bd6515bcf827437541c..0ca6f1d7f324eaf257891a3bbb0aab210aa30f6f 100644
 --- a/src/components/ScreenStackHeaderConfig.tsx
 +++ b/src/components/ScreenStackHeaderConfig.tsx
-@@ -39,7 +39,11 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -39,7 +39,12 @@ export const ScreenStackHeaderConfig = React.forwardRef<
      props.disableTopInsetApplication ?? false,
    );
  
@@ -1209,15 +1245,20 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
 +  const {
 +    headerLeftBarButtonItems,
 +    headerRightBarButtonItems,
++    headerCenterBarButtonItems,
 +    headerToolbarItems,
 +  } = props;
  
    const preparedHeaderLeftBarButtonItems =
      headerLeftBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
-@@ -49,22 +53,30 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -49,22 +54,36 @@ export const ScreenStackHeaderConfig = React.forwardRef<
      headerRightBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
        ? prepareHeaderBarButtonItems(headerRightBarButtonItems, 'right')
        : undefined;
++  const preparedHeaderCenterBarButtonItems =
++    headerCenterBarButtonItems && isHeaderBarButtonsAvailableForCurrentPlatform
++      ? prepareHeaderBarButtonItems(headerCenterBarButtonItems, 'right')
++      : undefined;
 +  const preparedHeaderToolbarItems =
 +    headerToolbarItems && isHeaderBarButtonsAvailableForCurrentPlatform
 +      ? prepareHeaderBarButtonItems(headerToolbarItems, 'right')
@@ -1227,6 +1268,7 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
      (preparedHeaderLeftBarButtonItems?.length ||
 -      preparedHeaderRightBarButtonItems?.length);
 +      preparedHeaderRightBarButtonItems?.length ||
++      preparedHeaderCenterBarButtonItems?.length ||
 +      preparedHeaderToolbarItems?.length);
  
    // Handle bar button item presses
@@ -1238,6 +1280,7 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
            ...(preparedHeaderLeftBarButtonItems ?? []),
            ...(preparedHeaderRightBarButtonItems ?? []),
 -        ].find(
++          ...(preparedHeaderCenterBarButtonItems ?? []),
 +          ...(preparedHeaderToolbarItems ?? []),
 +        ];
 +        const pressedItem = allItems.find(
@@ -1249,7 +1292,7 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
          );
          if (
            pressedItem &&
-@@ -73,6 +85,31 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -73,6 +92,31 @@ export const ScreenStackHeaderConfig = React.forwardRef<
          ) {
            pressedItem.onPress();
          }
@@ -1281,15 +1324,16 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
        }
      : undefined;
  
-@@ -102,6 +139,7 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -102,6 +146,8 @@ export const ScreenStackHeaderConfig = React.forwardRef<
          const allItems = [
            ...(preparedHeaderLeftBarButtonItems ?? []),
            ...(preparedHeaderRightBarButtonItems ?? []),
++          ...(preparedHeaderCenterBarButtonItems ?? []),
 +          ...(preparedHeaderToolbarItems ?? []),
          ];
          for (const item of allItems) {
            if (item && item.type === 'menu' && item.menu) {
-@@ -110,6 +148,17 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -110,6 +156,17 @@ export const ScreenStackHeaderConfig = React.forwardRef<
                action.onPress();
                return;
              }
@@ -1307,10 +1351,11 @@ index 421b3c2545426ae957271bd6515bcf827437541c..4566c1be1825ccaf487d4b64e96bf461
            }
          }
        }
-@@ -121,6 +170,7 @@ export const ScreenStackHeaderConfig = React.forwardRef<
+@@ -121,6 +178,8 @@ export const ScreenStackHeaderConfig = React.forwardRef<
        userInterfaceStyle={props.experimental_userInterfaceStyle}
        headerLeftBarButtonItems={preparedHeaderLeftBarButtonItems}
        headerRightBarButtonItems={preparedHeaderRightBarButtonItems}
++      headerCenterBarButtonItems={preparedHeaderCenterBarButtonItems}
 +      headerToolbarItems={preparedHeaderToolbarItems}
        onPressHeaderBarButtonItem={onPressHeaderBarButtonItem}
        onPressHeaderBarButtonMenuItem={onPressHeaderBarButtonMenuItem}
@@ -1366,7 +1411,7 @@ index be2c24dfee77f5883b5ab1d7473be80933b5dc6f..0b038d2005b2d51bbb2ab1d7dba7eacc
      if (item.icon?.type === 'imageSource') {
        imageSource = Image.resolveAssetSource(item.icon.imageSource);
 diff --git a/src/fabric/ScreenStackHeaderConfigNativeComponent.ts b/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
-index ba2479de0f49c112470f78c5084059ddd9e2f3e8..811d41a20d1212a5d05f8cdf86d6b63755ed1ce1 100644
+index ba2479de0f49c112470f78c5084059ddd9e2f3e8..8677583a8f8daa4839340467466bfab8d73111ab 100644
 --- a/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
 +++ b/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
 @@ -14,6 +14,7 @@ type OnPressHeaderBarButtonItemEvent = Readonly<{ buttonId: string }>;
@@ -1393,10 +1438,11 @@ index ba2479de0f49c112470f78c5084059ddd9e2f3e8..811d41a20d1212a5d05f8cdf86d6b637
    hideBackButton?: boolean | undefined;
    backButtonInCustomView?: boolean | undefined;
    blurEffect?: CT.WithDefault<BlurEffect, 'none'>;
-@@ -74,6 +78,7 @@ export interface NativeProps extends ViewProps {
+@@ -74,6 +78,8 @@ export interface NativeProps extends ViewProps {
    topInsetEnabled?: boolean | undefined;
    headerLeftBarButtonItems?: CT.UnsafeMixed[] | undefined;
    headerRightBarButtonItems?: CT.UnsafeMixed[] | undefined;
++  headerCenterBarButtonItems?: CT.UnsafeMixed[] | undefined;
 +  headerToolbarItems?: CT.UnsafeMixed[] | undefined;
    onPressHeaderBarButtonItem?:
      | CT.DirectEventHandler<OnPressHeaderBarButtonItemEvent>
@@ -1412,7 +1458,7 @@ index a405aec437bd879d8be7a706d29e965d77658899..cd649bd7ab7de7b7131302e8be682ec6
 +export * from './components/gamma/scroll-view-marker';
  export type * from './components/shared/types';
 diff --git a/src/types.tsx b/src/types.tsx
-index 76a83f3acb6fd3f0af7f027798848b7124100286..5d0e317fa26844989e8a80c4ffc4d703c22abd8a 100644
+index 76a83f3acb6fd3f0af7f027798848b7124100286..bb7abb6e4705b8423b2bf89989fe4a8b38d751f7 100644
 --- a/src/types.tsx
 +++ b/src/types.tsx
 @@ -26,6 +26,7 @@ export type SearchBarCommands = {
@@ -1438,10 +1484,20 @@ index 76a83f3acb6fd3f0af7f027798848b7124100286..5d0e317fa26844989e8a80c4ffc4d703
    /**
     * Array of UIBarButtomItems to the left side of the header.
     *
-@@ -747,6 +756,16 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
+@@ -747,6 +756,26 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
     * @platform ios
     */
    headerRightBarButtonItems?: HeaderBarButtonItem[] | undefined;
++  /**
++   * Array of UIBarButtonItems to the centered item group in modern iOS headers.
++   *
++   * This maps to `UINavigationItem.centerItemGroups` on iOS 26+ and lets
++   * document/editor-style chrome keep primary actions visually centered while
++   * leaving trailing search separate.
++   *
++   * @platform ios
++   */
++  headerCenterBarButtonItems?: HeaderBarButtonItem[] | undefined;
 +  /**
 +   * Array of UIBarButtonItems to display in the native toolbar attached to
 +   * the current screen's navigation controller.
@@ -1455,7 +1511,7 @@ index 76a83f3acb6fd3f0af7f027798848b7124100286..5d0e317fa26844989e8a80c4ffc4d703
    /**
     * When set to true the header will be hidden while the parent Screen is on the top of the stack. The default value is false.
     */
-@@ -808,6 +827,20 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
+@@ -808,6 +837,20 @@ export interface ScreenStackHeaderConfigProps extends ViewProps {
     * String that can be displayed in the header as a fallback for `headerTitle`.
     */
    title?: string | undefined;
@@ -1476,7 +1532,7 @@ index 76a83f3acb6fd3f0af7f027798848b7124100286..5d0e317fa26844989e8a80c4ffc4d703
    /**
     * Allows for setting text color of the title.
     */
-@@ -1279,11 +1312,46 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
+@@ -1279,11 +1322,46 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
  export interface HeaderBarButtonItemSpacing {
    type: 'spacing';
    spacing: number;
