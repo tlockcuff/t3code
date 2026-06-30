@@ -1,4 +1,5 @@
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import type { NativeStackNavigationOptions } from "expo-router/build/react-navigation/native-stack/types";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
@@ -43,7 +44,7 @@ import {
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen } from "./ThreadDetailScreen";
-import { ThreadGitControls, useThreadGitCenterHeaderItems } from "./ThreadGitControls";
+import { ThreadGitControls, useThreadGitRightHeaderItems } from "./ThreadGitControls";
 import { GitOverviewSheet } from "./git/GitOverviewSheet";
 import { ThreadNavigationDrawer } from "./ThreadNavigationDrawer";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -59,7 +60,6 @@ import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
 } from "../layout/AdaptiveWorkspaceLayout";
-import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { ThreadFileNavigatorPane } from "../files/thread-file-navigator-pane";
 import {
   ThreadInspectorContentStack,
@@ -71,6 +71,10 @@ interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
   readonly mode: ThreadInspectorMode;
 }
+
+type NativeHeaderItems = ReturnType<
+  NonNullable<NativeStackNavigationOptions["unstable_headerRightItems"]>
+>;
 
 const TOP_SCROLL_EDGE_EFFECT = nativeTopScrollEdgeEffect(Platform.OS, Platform.Version);
 
@@ -213,8 +217,14 @@ function ThreadRouteContent(
     readonly selectedThreadDetailState: ReturnType<typeof useSelectedThreadDetailState>;
   },
 ) {
-  const { fileInspector, layout, panes, showAuxiliaryPane, toggleAuxiliaryPane } =
-    useAdaptiveWorkspaceLayout();
+  const {
+    fileInspector,
+    layout,
+    panes,
+    showAuxiliaryPane,
+    toggleAuxiliaryPane,
+    togglePrimarySidebar,
+  } = useAdaptiveWorkspaceLayout();
   const { connectionState } = useRemoteConnectionStatus();
   const { onReconnectEnvironment } = useRemoteConnections();
   const { selectedThread, selectedThreadProject, selectedEnvironmentConnection } =
@@ -619,7 +629,48 @@ function ThreadRouteContent(
     onPull: gitActions.onPullSelectedThreadBranch,
     onRunAction: gitActions.onRunSelectedThreadGitAction,
   };
-  const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
+  const threadRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
+  const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
+    () => [
+      ...(props.onReturnToThread
+        ? [
+            {
+              accessibilityLabel: "Return to chat",
+              icon: { name: "chevron.left", type: "sfSymbol" as const },
+              identifier: "thread-left-return",
+              onPress: props.onReturnToThread,
+              sharesBackground: true,
+              type: "button" as const,
+              width: 58,
+            },
+          ]
+        : []),
+      {
+        accessibilityLabel: panes.primarySidebarVisible
+          ? "Maximize content"
+          : "Show thread sidebar",
+        icon: {
+          name: panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left",
+          type: "sfSymbol" as const,
+        },
+        identifier: "thread-left-sidebar",
+        onPress: togglePrimarySidebar,
+        sharesBackground: true,
+        type: "button" as const,
+        width: 58,
+      },
+      {
+        accessibilityLabel: "New task",
+        icon: { name: "square.and.pencil", type: "sfSymbol" as const },
+        identifier: "thread-left-new-task",
+        onPress: () => router.push("/new"),
+        sharesBackground: true,
+        type: "button" as const,
+        width: 58,
+      },
+    ],
+    [panes.primarySidebarVisible, props.onReturnToThread, router, togglePrimarySidebar],
+  );
 
   if (!environmentId || !threadId) {
     return <OpeningThreadLoadingScreen />;
@@ -678,9 +729,11 @@ function ThreadRouteContent(
                 placement: "integratedButton",
               }
             : undefined,
-          unstable_headerCenterItems:
-            layout.usesSplitView && Platform.OS === "ios" && !activeInspectorRenderer
-              ? () => threadCenterHeaderItems
+          unstable_headerLeftItems:
+            layout.usesSplitView && Platform.OS === "ios" ? () => splitLeftHeaderItems : undefined,
+          unstable_headerRightItems:
+            layout.usesSplitView && Platform.OS === "ios"
+              ? () => threadRightHeaderItems
               : undefined,
           unstable_navigationItemStyle: usesNativeHeaderGlass ? "editor" : undefined,
         }}
@@ -696,25 +749,6 @@ function ThreadRouteContent(
           />
         </Stack.Screen.Title>
       )}
-
-      <WorkspaceSidebarToolbar
-        afterSidebarButton={
-          <Stack.Toolbar.Button
-            accessibilityLabel="New task"
-            icon="square.and.pencil"
-            onPress={() => router.push("/new")}
-            separateBackground
-          />
-        }
-      >
-        {props.onReturnToThread ? (
-          <Stack.Toolbar.Button
-            accessibilityLabel="Return to chat"
-            icon="chevron.left"
-            onPress={props.onReturnToThread}
-          />
-        ) : null}
-      </WorkspaceSidebarToolbar>
 
       <ThreadGitControls {...threadGitControlProps} showActionControls={!layout.usesSplitView} />
 
