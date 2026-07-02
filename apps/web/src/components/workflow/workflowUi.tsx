@@ -154,7 +154,9 @@ export function AgentRowContent({
   leading?: ReactNode;
 }): ReactElement {
   const stats = agentStatsLabel(agent);
-  const errorText = agent.status === "error" ? agent.error : undefined;
+  // Failures often surface only in resultPreview (e.g. a thrown value the
+  // runner stringified) — fall back to it so red rows always explain why.
+  const errorText = agent.status === "error" ? (agent.error ?? agent.resultPreview) : undefined;
   const metaLabel = [agent.model, stats].filter((part) => part !== undefined).join(" · ");
   const hasBadges = agent.cached === true || (agent.attempt !== undefined && agent.attempt > 1);
   return (

@@ -414,6 +414,10 @@ function AgentTranscriptView({
   const [trimmed, setTrimmed] = useState(false);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Render-visible mirror of completeRef: "have we caught up to EOF at least
+  // once" — before that, an absence of parsed entries just means we are
+  // still paging, not that the agent produced no output.
+  const [caughtUp, setCaughtUp] = useState(false);
   const transcriptEntries = useMemo(() => lines.flatMap(parseTranscriptEntries), [lines]);
   const nextLineRef = useRef(0);
   const completeRef = useRef(false);
@@ -440,6 +444,9 @@ function AgentTranscriptView({
     setFailed(false);
     nextLineRef.current = result.value.nextLine;
     completeRef.current = result.value.complete;
+    if (result.value.complete) {
+      setCaughtUp(true);
+    }
     if (result.value.lines.length > 0) {
       // Long-running agents can produce transcripts far larger than a view
       // needs — retain a bounded tail so memory stays flat on million-token
@@ -495,7 +502,7 @@ function AgentTranscriptView({
       {transcriptEntries.length === 0 ? (
         failed ? (
           <p className="text-destructive/80">Failed to load transcript.</p>
-        ) : loading ? (
+        ) : loading || !caughtUp ? (
           <p className="text-muted-foreground/60">Loading transcript…</p>
         ) : (
           <p className="text-muted-foreground/60">No assistant output yet.</p>
