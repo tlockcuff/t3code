@@ -81,7 +81,7 @@ const ModelPickerSearchInput = memo(
     HTMLInputElement,
     {
       onSearchQueryChange: (query: string) => void;
-      onRequestClose?: () => void;
+      onRequestClose: (() => void) | undefined;
       onSelectHighlightedModel: () => boolean;
     }
   >(function ModelPickerSearchInput(
