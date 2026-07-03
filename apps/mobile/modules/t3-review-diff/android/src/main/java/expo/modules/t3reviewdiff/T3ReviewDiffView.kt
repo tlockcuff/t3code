@@ -12,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewConfiguration
 import android.widget.OverScroller
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
@@ -24,12 +25,16 @@ import kotlin.math.min
 
 class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   private val canvasView = DiffCanvasView(context)
+  private val swipeRefreshLayout = object : SwipeRefreshLayout(context) {
+    override fun canChildScrollUp(): Boolean = canvasView.verticalOffset() > 0
+  }
   private val onDebug by EventDispatcher()
   private val onVisibleFileChange by EventDispatcher()
   private val onToggleFile by EventDispatcher()
   private val onToggleViewedFile by EventDispatcher()
   private val onPressLine by EventDispatcher()
   private val onToggleComment by EventDispatcher()
+  private val onPullToRefresh by EventDispatcher()
   private var rows: List<DiffRow> = emptyList()
   private var visibleRows: List<DiffRow> = emptyList()
   private var collapsedFileIds: Set<String> = emptySet()
@@ -66,10 +71,19 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
       emitVisibleFile(first)
     }
 
-    addView(
+    swipeRefreshLayout.addView(
       canvasView,
       LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
     )
+    swipeRefreshLayout.setOnRefreshListener { onPullToRefresh(emptyMap()) }
+    addView(
+      swipeRefreshLayout,
+      LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+    )
+  }
+
+  fun setRefreshing(value: Boolean) {
+    swipeRefreshLayout.isRefreshing = value
   }
 
   fun setTokensResetKey(value: String) {
@@ -163,6 +177,7 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
   }
 
   fun setTokensPatchJson(value: String) {
+    val capturedContentResetKey = contentResetKey
     payloadDecodeExecutor.execute {
       try {
         val payload = JSONObject(value)
@@ -171,6 +186,7 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
           payload.optJSONObject("tokensByRowId") ?: JSONObject(),
         )
         post {
+          if (capturedContentResetKey != contentResetKey) return@post
           if (resetKey.isNotEmpty() && resetKey != tokensResetKey) return@post
           if (decodedTokens.isNotEmpty()) {
             canvasView.tokensByRowId = canvasView.tokensByRowId + decodedTokens
@@ -211,7 +227,14 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
           val deltaX = event.x - lastTouchX
           val deltaY = event.y - lastTouchY
           if (max(abs(deltaX), abs(deltaY)) > touchSlop) {
-            dragAxis = if (abs(deltaY) >= abs(deltaX)) DragAxis.VERTICAL else DragAxis.HORIZONTAL
+            if (abs(deltaY) >= abs(deltaX)) {
+              if (deltaY > 0 && canvasView.verticalOffset() == 0) {
+                return false
+              }
+              dragAxis = DragAxis.VERTICAL
+            } else {
+              dragAxis = DragAxis.HORIZONTAL
+            }
           }
         }
         return dragAxis != null
@@ -839,6 +862,7 @@ private class DiffCanvasView(context: Context) : View(context) {
           textPaint.textSize = style.codeFontSizePx
           textPaint.color = token.color ?: theme.text
           textPaint.typeface = when {
+            token.fontStyle and 3 == 3 -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD_ITALIC)
             token.fontStyle and 1 != 0 -> Typeface.create(Typeface.MONOSPACE, Typeface.ITALIC)
             token.fontStyle and 2 != 0 -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             else -> Typeface.MONOSPACE

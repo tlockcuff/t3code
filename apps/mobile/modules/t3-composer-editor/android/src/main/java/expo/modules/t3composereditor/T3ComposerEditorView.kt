@@ -437,7 +437,9 @@ private class SelectionAwareEditText(context: Context) : EditText(context) {
       val imageUris = buildList {
         if (clip != null) {
           for (index in 0 until clip.itemCount) {
-            clip.getItemAt(index).uri?.let { uri ->
+            val item = clip.getItemAt(index)
+            if (!item.text.isNullOrEmpty()) continue
+            item.uri?.let { uri ->
               val mimeType = context.contentResolver.getType(uri)
               if (mimeType?.startsWith("image/") == true) add(uri.toString())
             }
