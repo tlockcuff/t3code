@@ -20,7 +20,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] 2. Preserve real failure causes in projected errors (Claude adapter + ProviderFailure)
 - [x] 3. Preserve cursor failure detail (requestId, durationMs; SDK exposes no error text yet)
 - [ ] 4. Log failure/lifecycle frames in native provider logs
-- [ ] 5. Surface provider-process crashes / reconcile cancellations to the user
+- [x] 5. Surface provider-process crashes / reconcile cancellations to the user
 - [ ] 6. Ingest codex-native collab subagents
 - [ ] 7. Fix grok/ACP background subagent lifecycle + transcript projection
 - [x] 8. Invisible post-turn wakeup turns (fix already on this branch — verify against audit scenarios)
@@ -207,6 +207,13 @@ terminalizes runs/attempts/turns to `cancelled` but emits no user-visible item a
 2. Record the cancellation reason on the run payload (`cancelReason: "runtime_reconcile" |
    "user" | ...`) so UI and debugging can distinguish.
 3. Optional: auto-offer retry in UI for reconcile-cancelled runs.
+
+- [x] Status: FIXED — the reconcile appends a "Run interrupted" error item (status cancelled)
+      per terminalized run with the restart/shutdown reason; unit test updated. App-verified
+      2026-07-03: killed the backend mid-turn, after restart the thread renders "Run
+      interrupted — Cancelled because the server restarted before the provider work
+      completed." A `cancelReason` field on runs and UI retry affordance remain optional
+      follow-ups.
 
 **Repro:**
 
