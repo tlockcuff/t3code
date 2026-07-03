@@ -18,7 +18,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 - [x] 1. Honor `is_error` on Claude SDK results (runs marked completed on 401/529)
 - [x] 2. Preserve real failure causes in projected errors (Claude adapter + ProviderFailure)
-- [ ] 3. Preserve cursor failure detail (requestId, durationMs, SDK `error_code`)
+- [x] 3. Preserve cursor failure detail (requestId, durationMs; SDK exposes no error text yet)
 - [ ] 4. Log failure/lifecycle frames in native provider logs
 - [ ] 5. Surface provider-process crashes / reconcile cancellations to the user
 - [ ] 6. Ingest codex-native collab subagents
@@ -163,7 +163,11 @@ sqlite3 -readonly ~/.t3/userdata-v2/state.sqlite \
 grep 'run.completed' ~/.t3/userdata-v2/logs/provider/c9e72a05-*.log | tail -1
 ```
 
-- [ ] Status: not started
+- [x] Status: FIXED for what the SDK provides (commit after 5669dc4644) — failed cursor turns
+      now persist "Cursor run <id> ended with status \"error\". requestId <id> after <n>s".
+      @cursor/sdk 1.0.22 exposes NO error text/errorCode on RunResult or Run (store-internal
+      only) — ask Cursor to surface errorCode alongside the EPIPE report (issue 14). Real
+      cursor-failure app verification deferred: isolated dev home has no cursor credentials.
 
 ## 4. Native provider logs never record failure/lifecycle frames
 
