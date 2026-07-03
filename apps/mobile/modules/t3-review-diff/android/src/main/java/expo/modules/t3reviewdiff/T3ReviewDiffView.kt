@@ -86,7 +86,7 @@ class T3ReviewDiffView(context: Context, appContext: AppContext) : ExpoView(cont
     lastVisibleFileId = null
     pendingInitialScroll = true
     canvasView.setVerticalOffset(0)
-    canvasView.setHorizontalOffset(0)
+    canvasView.resetHorizontalOffsets()
     applyPendingInitialScroll()
   }
 
@@ -416,12 +416,18 @@ private data class DiffRow(
   val change: String,
   val oldLineNumber: Int?,
   val newLineNumber: Int?,
+  val wordDiffRanges: List<DiffWordDiffRange>?,
   val commentText: String,
   val commentRangeLabel: String,
   val commentSectionTitle: String,
 ) {
   val resolvedFileId: String get() = fileId.ifEmpty { id }
 }
+
+private data class DiffWordDiffRange(
+  val start: Int,
+  val end: Int,
+)
 
 private data class DiffToken(
   val content: String,
@@ -567,12 +573,13 @@ private class DiffCanvasView(context: Context) : View(context) {
   )
   private var rowOffsets = intArrayOf(0)
   private var verticalOffset = 0
-  private var horizontalOffset = 0
+  private var horizontalOffsetsByFileId = HashMap<String, Int>()
   private var lastVisibleRange: Pair<Int, Int>? = null
 
   var rows: List<DiffRow> = emptyList()
     set(value) {
       field = value
+      horizontalOffsetsByFileId.clear()
       rebuildOffsets()
     }
   var tokensByRowId: Map<String, List<DiffToken>> = emptyMap()
@@ -603,7 +610,7 @@ private class DiffCanvasView(context: Context) : View(context) {
   var contentWidthPx: Int = (1200 * density).toInt()
     set(value) {
       field = max(value, suggestedMinimumWidth)
-      setHorizontalOffset(horizontalOffset)
+      clampHorizontalOffsets()
       invalidate()
     }
   var onRowTap: ((DiffRow, String) -> Unit)? = null
@@ -619,7 +626,7 @@ private class DiffCanvasView(context: Context) : View(context) {
   override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
     super.onSizeChanged(width, height, oldWidth, oldHeight)
     setVerticalOffset(verticalOffset)
-    setHorizontalOffset(horizontalOffset)
+    clampHorizontalOffsets()
   }
 
   override fun onDraw(canvas: Canvas) {
@@ -665,19 +672,57 @@ private class DiffCanvasView(context: Context) : View(context) {
   fun maxVerticalOffset(): Int = max(0, (rowOffsets.lastOrNull() ?: 0) - height)
 
   fun setHorizontalOffset(value: Int) {
+    val fileId = fileIdAtVerticalCenter() ?: return
     val nextOffset = value.coerceIn(0, maxHorizontalOffset())
-    if (horizontalOffset == nextOffset) return
-    horizontalOffset = nextOffset
+    val current = horizontalOffsetsByFileId[fileId] ?: 0
+    if (current == nextOffset) return
+    horizontalOffsetsByFileId[fileId] = nextOffset
     invalidate()
   }
 
   fun scrollByHorizontal(delta: Int) {
-    setHorizontalOffset(horizontalOffset + delta)
+    val fileId = fileIdAtVerticalCenter() ?: return
+    val current = horizontalOffsetsByFileId[fileId] ?: 0
+    setHorizontalOffsetForFile(fileId, current + delta)
   }
 
-  fun horizontalOffset(): Int = horizontalOffset
+  fun horizontalOffset(): Int {
+    val fileId = fileIdAtVerticalCenter() ?: return 0
+    return horizontalOffsetsByFileId[fileId] ?: 0
+  }
 
   fun maxHorizontalOffset(): Int = max(0, contentWidthPx - width)
+
+  fun resetHorizontalOffsets() {
+    horizontalOffsetsByFileId.clear()
+  }
+
+  private fun setHorizontalOffsetForFile(fileId: String, value: Int) {
+    val nextOffset = value.coerceIn(0, maxHorizontalOffset())
+    val current = horizontalOffsetsByFileId[fileId] ?: 0
+    if (current == nextOffset) return
+    horizontalOffsetsByFileId[fileId] = nextOffset
+    invalidate()
+  }
+
+  private fun clampHorizontalOffsets() {
+    val maxOffset = maxHorizontalOffset()
+    val iterator = horizontalOffsetsByFileId.entries.iterator()
+    while (iterator.hasNext()) {
+      val entry = iterator.next()
+      entry.setValue(entry.value.coerceIn(0, maxOffset))
+    }
+  }
+
+  private fun fileIdAtVerticalCenter(): String? {
+    if (rows.isEmpty()) return null
+    val centerY = verticalOffset + height / 2
+    val index = rowIndexAt(centerY).coerceIn(0, rows.lastIndex)
+    return (index downTo 0)
+      .asSequence()
+      .map { rows[it].resolvedFileId }
+      .firstOrNull { it.isNotEmpty() }
+  }
 
   private fun rebuildOffsets() {
     rowOffsets = IntArray(rows.size + 1)
@@ -760,7 +805,7 @@ private class DiffCanvasView(context: Context) : View(context) {
     fill(canvas, theme.hunkBackground, 0f, top.toFloat(), width.toFloat(), bottom.toFloat())
     textPaint.color = theme.hunkText
     textPaint.textSize = style.codeFontSizePx
-    drawScrollableCode(canvas, top, bottom) { codeX ->
+    drawScrollableCode(canvas, top, bottom, row.resolvedFileId) { codeX ->
       canvas.drawText(
         row.text.ifEmpty { row.content },
         codeX,
@@ -773,7 +818,7 @@ private class DiffCanvasView(context: Context) : View(context) {
   private fun drawNoticeRow(canvas: Canvas, row: DiffRow, top: Int, bottom: Int) {
     textPaint.color = theme.mutedText
     textPaint.textSize = style.codeFontSizePx
-    drawScrollableCode(canvas, top, bottom) { codeX ->
+    drawScrollableCode(canvas, top, bottom, row.resolvedFileId) { codeX ->
       canvas.drawText(row.text, codeX, centeredBaseline(top, bottom, textPaint), textPaint)
     }
   }
@@ -782,7 +827,7 @@ private class DiffCanvasView(context: Context) : View(context) {
     fill(canvas, theme.headerBackground, style.gutterWidthPx, top.toFloat(), width.toFloat(), bottom.toFloat())
     boldTextPaint.color = theme.text
     boldTextPaint.textSize = 12f * density
-    drawScrollableCode(canvas, top, bottom) { codeX ->
+    drawScrollableCode(canvas, top, bottom, row.resolvedFileId) { codeX ->
       canvas.drawText(
         row.commentSectionTitle.ifEmpty { row.commentRangeLabel.ifEmpty { "Comment" } },
         codeX,
@@ -824,7 +869,8 @@ private class DiffCanvasView(context: Context) : View(context) {
     }
 
     val tokens = tokensByRowId[row.id]
-    drawScrollableCode(canvas, top, bottom) { codeX ->
+    drawScrollableCode(canvas, top, bottom, row.resolvedFileId) { codeX ->
+      drawWordDiffRanges(canvas, row, codeX, top, bottom)
       if (tokens.isNullOrEmpty()) {
         textPaint.textSize = style.codeFontSizePx
         textPaint.color = when (row.change) {
@@ -859,16 +905,40 @@ private class DiffCanvasView(context: Context) : View(context) {
     canvas.drawText(newNumber, style.changeBarWidthPx + style.gutterWidthPx / 2f, baseline, textPaint)
   }
 
+  private fun drawWordDiffRanges(canvas: Canvas, row: DiffRow, codeX: Float, top: Int, bottom: Int) {
+    val ranges = row.wordDiffRanges
+    if (ranges.isNullOrEmpty()) return
+    val change = row.change
+    if (change != "add" && change != "delete") return
+
+    val fillColor = if (change == "add") withAlpha(theme.addBar, 71) else withAlpha(theme.deleteBar, 71)
+    textPaint.textSize = style.codeFontSizePx
+    val charWidth = textPaint.measureText("m")
+    val highlightHeight = max(4f * density, min((bottom - top).toFloat() - 4f * density, textPaint.fontMetrics.let { -it.ascent + it.descent }))
+    val highlightY = (top + bottom) / 2f - highlightHeight / 2f
+    val cornerRadius = 3f * density
+
+    for (range in ranges) {
+      if (range.end <= range.start) continue
+      val startX = codeX + range.start * charWidth
+      val rangeWidth = max(2f * density, (range.end - range.start) * charWidth)
+      backgroundPaint.color = fillColor
+      canvas.drawRoundRect(startX, highlightY, startX + rangeWidth, highlightY + highlightHeight, cornerRadius, cornerRadius, backgroundPaint)
+    }
+  }
+
   private fun drawScrollableCode(
     canvas: Canvas,
     top: Int,
     bottom: Int,
+    fileId: String,
     draw: (Float) -> Unit,
   ) {
     val gutterEnd = style.changeBarWidthPx + style.gutterWidthPx
+    val offset = horizontalOffsetsByFileId[fileId] ?: 0
     canvas.save()
     canvas.clipRect(gutterEnd, top.toFloat(), width.toFloat(), bottom.toFloat())
-    draw(gutterEnd + style.codePaddingPx - horizontalOffset)
+    draw(gutterEnd + style.codePaddingPx - offset)
     canvas.restore()
   }
 
@@ -895,10 +965,12 @@ private class DiffCanvasView(context: Context) : View(context) {
   private fun drawHorizontalScrollIndicator(canvas: Canvas) {
     val maxOffset = maxHorizontalOffset()
     if (maxOffset <= 0 || width <= 0) return
+    val currentOffset = horizontalOffset()
+    if (currentOffset <= 0) return
     val trackWidth = width.toFloat()
     val thumbWidth = max(24f * density, trackWidth * trackWidth / contentWidthPx)
     val thumbTravel = trackWidth - thumbWidth
-    val left = thumbTravel * horizontalOffset / maxOffset
+    val left = thumbTravel * currentOffset / maxOffset
     fill(
       canvas,
       withAlpha(theme.mutedText, 110),
@@ -962,6 +1034,15 @@ private fun parseRows(value: String): List<DiffRow> = try {
       change = row.optString("change", "context"),
       oldLineNumber = row.optNullableInt("oldLineNumber"),
       newLineNumber = row.optNullableInt("newLineNumber"),
+      wordDiffRanges = row.optJSONArray("wordDiffRanges")?.let { rangesArray ->
+        List(rangesArray.length()) { rangeIndex ->
+          val rangeObj = rangesArray.getJSONObject(rangeIndex)
+          DiffWordDiffRange(
+            start = rangeObj.optInt("start"),
+            end = rangeObj.optInt("end"),
+          )
+        }
+      },
       commentText = row.optString("commentText"),
       commentRangeLabel = row.optString("commentRangeLabel"),
       commentSectionTitle = row.optString("commentSectionTitle"),

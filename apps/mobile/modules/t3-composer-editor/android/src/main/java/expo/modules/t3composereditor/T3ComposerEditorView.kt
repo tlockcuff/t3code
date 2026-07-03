@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.net.Uri
 import android.text.Editable
 import android.text.InputType
 import android.text.Spanned
@@ -20,6 +21,8 @@ import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 import kotlin.math.max
 
 class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
@@ -434,21 +437,39 @@ private class SelectionAwareEditText(context: Context) : EditText(context) {
     if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
       val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
       val clip = clipboard?.primaryClip
-      val imageUris = buildList {
+      val fileUris = buildList {
         if (clip != null) {
           for (index in 0 until clip.itemCount) {
             clip.getItemAt(index).uri?.let { uri ->
               val mimeType = context.contentResolver.getType(uri)
-              if (mimeType?.startsWith("image/") == true) add(uri.toString())
+              if (mimeType?.startsWith("image/") == true) {
+                copyToLocalFile(uri)?.let { add(it) }
+              }
             }
           }
         }
       }
-      if (imageUris.isNotEmpty()) {
-        pasteImagesListener?.invoke(imageUris)
+      if (fileUris.isNotEmpty()) {
+        pasteImagesListener?.invoke(fileUris)
         return true
       }
     }
     return super.onTextContextMenuItem(id)
+  }
+
+  private fun copyToLocalFile(contentUri: Uri): String? {
+    return try {
+      val pasteDir = File(context.cacheDir, "t3-composer-paste")
+      pasteDir.mkdirs()
+      val destFile = File(pasteDir, "${UUID.randomUUID()}.png")
+      context.contentResolver.openInputStream(contentUri)?.use { input ->
+        destFile.outputStream().use { output ->
+          input.copyTo(output)
+        }
+      }
+      Uri.fromFile(destFile).toString()
+    } catch (_: Exception) {
+      null
+    }
   }
 }
