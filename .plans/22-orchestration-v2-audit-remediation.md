@@ -24,7 +24,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] 6. Ingest codex-native collab subagents
 - [ ] 7. Fix grok/ACP background subagent lifecycle + transcript projection
 - [x] 8. Invisible post-turn wakeup turns (fix already on this branch — verify against audit scenarios)
-- [ ] 9. Route shared-codex-session native logs to the correct thread's file
+- [x] 9. Route shared-codex-session native logs to the correct thread's file
 - [ ] 10. Coalesce streaming-delta event persistence (~2800x amplification)
 - [x] 11. Assistant text segments merged without separator (fixed; regression fixture claude_text_segments added)
 - [x] 12. OpenCode `file_search` items drop error/output
@@ -357,7 +357,14 @@ grep -l '019f1b62-f532' ~/.t3/userdata-v2/logs/provider/*.log*  # only 71e29ba5-
 ls ~/.t3/userdata-v2/logs/provider/ | grep -c 'c878541b\|de5f191a\|68f7595b\|af66fc2c'  # 0
 ```
 
-- [ ] Status: not started
+- [x] Status: FIXED — the codex protocol logger resolves the target per frame via
+      `codexNativeThreadIdFromProtocolEvent` + a per-session native→app-thread route map
+      seeded at root-turn / subagent-thread registration; unrouted frames fall back to the
+      opener. App-verified: a real codex subagent spawn produced dedicated per-native-thread
+      log files (only that thread's ids inside). A subagent's earliest pre-registration frames
+      may still land in the opener file, but the bulk gets a dedicated file — enough that the
+      opener log's rotation no longer erases other threads' ground truth. Retention bump
+      (.plans/06) is the complementary follow-up.
 
 ## 10. Streaming deltas persisted as full-row event pairs (~2800x amplification)
 
