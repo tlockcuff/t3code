@@ -287,6 +287,7 @@ function MarkdownCodeBlock(props: {
   readonly backgroundColor: string;
   readonly borderColor: string;
   readonly content: string;
+  readonly copyTintColor: ColorValue;
   readonly headerTextColor: string;
   readonly fontSize: number;
   readonly highlightCode: boolean;
@@ -295,8 +296,10 @@ function MarkdownCodeBlock(props: {
   readonly textColor: string;
   readonly theme: ReviewDiffTheme;
 }) {
+  const content = props.content.replace(/\n$/, "");
+  const languageLabel = props.language?.trim() || "text";
   const highlighted = useMarkdownCodeHighlight({
-    code: props.content,
+    code: content,
     enabled: props.highlightCode && Boolean(props.language?.trim()),
     language: props.language,
     theme: props.theme,
@@ -308,20 +311,29 @@ function MarkdownCodeBlock(props: {
       className="my-3 min-w-0 max-w-full self-stretch overflow-hidden rounded-lg border"
       style={{ backgroundColor: props.backgroundColor, borderColor: props.borderColor }}
     >
-      {props.language ? (
-        <View className="border-b px-3.5 py-2" style={{ borderBottomColor: props.borderColor }}>
-          <NativeText
-            className="font-mono uppercase opacity-70"
-            style={{
-              color: props.headerTextColor,
-              fontSize: props.fontSize,
-              ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
-            }}
-          >
-            {props.language}
-          </NativeText>
-        </View>
-      ) : null}
+      <View
+        className="flex-row items-center justify-between gap-2 border-b py-1 pr-1.5 pl-3.5"
+        style={{ borderBottomColor: props.borderColor }}
+      >
+        <NativeText
+          className="flex-1 font-mono uppercase opacity-70"
+          numberOfLines={1}
+          style={{
+            color: props.headerTextColor,
+            fontSize: props.fontSize,
+            ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+          }}
+        >
+          {languageLabel}
+        </NativeText>
+        <CopyTextButton
+          accessibilityLabel="Copy code"
+          text={content}
+          tintColor={props.copyTintColor}
+          buttonSize={32}
+          iconSize={16}
+        />
+      </View>
       <ScrollView
         horizontal
         bounces={false}
@@ -380,7 +392,7 @@ function MarkdownCodeBlock(props: {
                 }
                 return renderedLine;
               })
-            : props.content}
+            : content}
         </NativeText>
       </ScrollView>
     </View>
@@ -421,8 +433,11 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
     () => resolveNativeMarkdownTypography(appearance.baseFontSize),
     [appearance.baseFontSize],
   );
-  const colors = MARKDOWN_COLORS[colorScheme === "dark" ? "dark" : "light"];
+  const themeMode = colorScheme === "dark" ? "dark" : "light";
+  const colors = MARKDOWN_COLORS[themeMode];
+  const iconSubtleColor = String(useThemeColor("--color-icon-subtle"));
   const inlineSkillForeground = String(useThemeColor("--color-inline-skill-foreground"));
+  const userBubbleForegroundMuted = String(useThemeColor("--color-user-bubble-foreground-muted"));
   const regularFontFamily = useFontFamily("regular");
   const boldFontFamily = useFontFamily("bold");
 
@@ -533,7 +548,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
       inlineCodeTextColor: string,
       blockBackgroundColor: string,
       blockTextColor: string,
+      copyTintColor: ColorValue,
       preserveSoftBreaks: boolean,
+      highlightCode: boolean,
     ): CustomRenderers => ({
       link: ({ children, href = "" }) => {
         const presentation = resolveMarkdownLinkPresentation(href);
@@ -637,8 +654,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           backgroundColor={blockBackgroundColor}
           borderColor={markdownHrColor}
           content={content}
+          copyTintColor={copyTintColor}
           fontSize={markdownFontSizes.codeBlockFontSize}
-          headerTextColor={markdownBodyColor}
+          headerTextColor={blockTextColor}
           highlightCode={highlightCode}
           language={language}
           lineHeight={markdownFontSizes.codeBlockLineHeight}
@@ -702,7 +720,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           markdownUserInlineCodeText,
           markdownUserFenceBg,
           markdownUserFenceText,
+          userBubbleForegroundMuted,
           true,
+          false,
         ),
         nativeTextStyle: {
           color: markdownUserBodyColor,
@@ -733,7 +753,9 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
           markdownInlineCodeText,
           markdownCodeBg,
           markdownCodeText,
+          iconSubtleColor,
           false,
+          true,
         ),
         nativeTextStyle: {
           color: markdownBodyColor,
@@ -760,11 +782,14 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
   }, [
     boldFontFamily,
     colors,
+    iconSubtleColor,
     inlineSkillForeground,
     markdownFontSizes,
     nativeMarkdownTypography,
     onLinkPress,
     regularFontFamily,
+    themeMode,
+    userBubbleForegroundMuted,
   ]);
 }
 
