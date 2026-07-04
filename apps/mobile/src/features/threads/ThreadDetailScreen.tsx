@@ -276,6 +276,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         .hitSlop({ left: 0, width: 40 })
         .activeOffsetX([10, 999])
         .failOffsetY([-24, 24])
+        // Fail at touch-down for anything below the header strip. Activating
+        // there (the y check in onEnd fires too late to matter) swallows the
+        // left-edge touch and blocks the native back-swipe along the whole
+        // screen height.
+        .onTouchesDown((event, stateManager) => {
+          const touchY = event.allTouches[0]?.y ?? Number.POSITIVE_INFINITY;
+          if (touchY >= drawerGestureThreshold) {
+            stateManager.fail();
+          }
+        })
         .onEnd((event) => {
           const translationX = Math.max(event.translationX, 0);
           if (event.y < drawerGestureThreshold && translationX > 56) {
