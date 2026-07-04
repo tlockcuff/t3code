@@ -171,40 +171,6 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     setExpandedProvider(null);
   }, []);
 
-  const environments = useMemo(
-    () =>
-      pipe(
-        [
-          ...new Set(
-            pipe(
-              projects,
-              Arr.map((project) => project.environmentId),
-            ),
-          ),
-        ],
-        Arr.map((environmentId) => {
-          const environment = savedConnectionsById[environmentId];
-          if (!environment) {
-            return null;
-          }
-
-          return {
-            environmentId,
-            environmentLabel: environment.environmentLabel,
-          };
-        }),
-        Arr.filter(
-          (
-            entry,
-          ): entry is {
-            readonly environmentId: EnvironmentId;
-            readonly environmentLabel: string;
-          } => entry !== null,
-        ),
-      ),
-    [projects, savedConnectionsById],
-  );
-
   const projectsForEnvironment = useMemo(
     () =>
       pipe(
@@ -220,6 +186,40 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     ) ??
     projectsForEnvironment[0] ??
     null;
+
+  // Only offer machines that actually host the currently selected repository, so
+  // switching computers moves the same repo across machines instead of jumping to
+  // whatever unrelated project happens to be first on the other machine.
+  const selectedRepositoryKey = selectedProject?.repositoryIdentity?.canonicalKey ?? null;
+  const environments = useMemo(() => {
+    const seen = new Set<EnvironmentId>();
+    const result: Array<{
+      readonly environmentId: EnvironmentId;
+      readonly environmentLabel: string;
+    }> = [];
+    for (const project of projects) {
+      if (
+        selectedRepositoryKey !== null &&
+        (project.repositoryIdentity?.canonicalKey ?? null) !== selectedRepositoryKey
+      ) {
+        continue;
+      }
+      if (seen.has(project.environmentId)) {
+        continue;
+      }
+      const environment = savedConnectionsById[project.environmentId];
+      if (!environment) {
+        continue;
+      }
+      seen.add(project.environmentId);
+      result.push({
+        environmentId: project.environmentId,
+        environmentLabel: environment.environmentLabel,
+      });
+    }
+    return result;
+  }, [projects, savedConnectionsById, selectedRepositoryKey]);
+
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
   );
@@ -384,10 +384,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     setSelectedProjectKey(nextProjectKey);
   }, []);
 
-  const selectEnvironment = useCallback((environmentId: EnvironmentId) => {
-    setSelectedEnvironmentId(environmentId);
-    setSelectedProjectKey(null);
-  }, []);
+  const selectEnvironment = useCallback(
+    (environmentId: EnvironmentId) => {
+      const repositoryKey = selectedProject?.repositoryIdentity?.canonicalKey ?? null;
+      const match =
+        repositoryKey === null
+          ? undefined
+          : projects.find(
+              (project) =>
+                project.environmentId === environmentId &&
+                (project.repositoryIdentity?.canonicalKey ?? null) === repositoryKey,
+            );
+      setSelectedEnvironmentId(environmentId);
+      setSelectedProjectKey(match ? scopedProjectKey(match.environmentId, match.id) : null);
+    },
+    [projects, selectedProject?.repositoryIdentity?.canonicalKey],
+  );
 
   const setWorkspaceMode = useCallback(
     (mode: WorkspaceMode) => {
