@@ -420,11 +420,8 @@ function ThreadNavigationSidebarPane(
               // Same gating as the compact Home list: aggregated groups have no
               // single target project, and pending-project groups hold a
               // placeholder shell rather than a real project.
-              onNewThread={
-                item.group.projects.length === 1 && !item.group.key.startsWith("pending-project:")
-                  ? props.onNewThreadInProject
-                  : undefined
-              }
+              newThreadTarget={item.group.newThreadTarget}
+              onNewThread={props.onNewThreadInProject}
               project={item.group.representative}
               threadCount={item.group.threads.length + item.group.pendingTasks.length}
               title={item.group.title}

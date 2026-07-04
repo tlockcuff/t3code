@@ -43,16 +43,24 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
   readonly isFirst: boolean;
   readonly groupKey: string;
   readonly onGroupAction: (key: string, action: HomeGroupDisplayAction) => void;
+  /** Project a quick new thread should target; null hides the button. */
+  readonly newThreadTarget?: EnvironmentProject | null;
   readonly onNewThread?: (project: EnvironmentProject) => void;
 }) {
   const iconMutedColor = useThemeColor("--color-icon-muted");
-  const { groupKey, onGroupAction, onNewThread, project } = props;
+  const { groupKey, onGroupAction, onNewThread } = props;
+  const newThreadTarget = props.newThreadTarget ?? null;
   const compact = props.variant === "compact";
   const handleToggle = useCallback(
     () => onGroupAction(groupKey, "toggle-collapsed"),
     [groupKey, onGroupAction],
   );
-  const handleNewThread = useCallback(() => onNewThread?.(project), [onNewThread, project]);
+  const handleNewThread = useCallback(() => {
+    if (newThreadTarget) {
+      onNewThread?.(newThreadTarget);
+    }
+  }, [newThreadTarget, onNewThread]);
+  const showNewThreadButton = onNewThread !== undefined && newThreadTarget !== null;
 
   // The new-thread button is a SIBLING of the collapse toggle, not a child:
   // nested touchables are unreachable to VoiceOver/TalkBack (the parent
@@ -111,7 +119,7 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
           {props.threadCount}
         </Text>
       </Pressable>
-      {onNewThread ? (
+      {showNewThreadButton ? (
         <Pressable
           accessibilityLabel={`Create new thread in ${props.title}`}
           accessibilityRole="button"

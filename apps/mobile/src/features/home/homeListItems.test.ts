@@ -70,6 +70,7 @@ function makeGroup(key: string, threadCount: number): HomeThreadGroup {
     // All threads inside the recency window, so the baseline stays at the
     // initial page size and the pagination expectations below hold.
     recentThreads: threads,
+    newThreadTarget: project,
   };
 }
 
@@ -171,6 +172,7 @@ describe("buildHomeListLayout", () => {
       pendingTasks: [],
       threads,
       recentThreads: threads.slice(0, 3),
+      newThreadTarget: project,
     };
 
     const collapsedToRecent = buildHomeListLayout({
