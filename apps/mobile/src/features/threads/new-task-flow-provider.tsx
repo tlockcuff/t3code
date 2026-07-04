@@ -283,7 +283,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // identity is the primary signal; projects that haven't reported one yet (still
   // indexing) fall back to workspace basename / title so a valid host isn't hidden.
   const selectedRepositoryKey = selectedProject?.repositoryIdentity?.canonicalKey ?? null;
-  const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) ?? null;
+  // `|| null` (not `??`): a pending-task placeholder project can have an empty
+  // workspaceRoot, and an "" basename would reject every real host below.
+  const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
   const selectedProjectTitle = selectedProject?.title ?? null;
   const environments = useMemo(() => {
     const seen = new Set<EnvironmentId>();
@@ -510,7 +512,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       // indexed) fall back to workspace basename, then title, so switching
       // computers still follows the same repo instead of resetting to
       // whatever project is first on the target machine.
-      const workspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) ?? null;
+      const workspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
       const match =
         (repositoryKey !== null
           ? projectsOnTarget.find(
