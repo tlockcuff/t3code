@@ -14,6 +14,7 @@ import {
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import {
+  COMPOSER_TOOLBAR_CONTROL_HEIGHT,
   ComposerToolbarButton,
   ComposerToolbarRow,
   ComposerToolbarScroller,
@@ -642,7 +643,7 @@ export function NewTaskDraftScreen(props: {
         isAndroid
           ? isExpanded
             ? { minHeight: 80, maxHeight: 160, paddingHorizontal: 4, paddingVertical: 4 }
-            : { height: 36 }
+            : { height: COMPOSER_TOOLBAR_CONTROL_HEIGHT }
           : { flex: 1, minHeight: 0 }
       }
       textStyle={
