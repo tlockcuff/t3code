@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useNavigation } from "@react-navigation/native";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import {
   connectionStatusText,
   type EnvironmentConnectionPhase,
@@ -82,7 +82,9 @@ export function SettingsEnvironmentsRouteScreen() {
         <NativeHeaderToolbar placement="right">
           <NativeHeaderToolbar.Button
             icon="plus"
-            onPress={() => navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })}
+            onPress={() =>
+              navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" })
+            }
             separateBackground
             tintColor={headerIconColor}
           />

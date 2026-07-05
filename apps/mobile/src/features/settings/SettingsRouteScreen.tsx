@@ -2,7 +2,7 @@ import { useAuth, useUser } from "@clerk/expo";
 import * as Notifications from "expo-notifications";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import * as Effect from "effect/Effect";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Linking, Platform, ScrollView, View } from "react-native";

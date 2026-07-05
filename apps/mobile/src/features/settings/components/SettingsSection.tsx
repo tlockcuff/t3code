@@ -3,16 +3,19 @@ import { Platform, View } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
 
-export function SettingsSection(props: { readonly title: string; readonly children: ReactNode }) {
+export function SettingsSection(props: {
+  readonly title: string;
+  readonly children: ReactNode;
+  /** Force the grouped card background; Android otherwise lists options flat. */
+  readonly card?: boolean;
+}) {
+  const showCard = props.card ?? Platform.OS !== "android";
   return (
     <View className="gap-2">
       <Text className="px-2 text-sm font-t3-medium text-foreground-muted">{props.title}</Text>
-      {/* Android lists options flat on the screen; iOS keeps the grouped card. */}
       <View
         className={
-          Platform.OS === "android"
-            ? "overflow-hidden rounded-[28px]"
-            : "overflow-hidden rounded-[28px] bg-card"
+          showCard ? "overflow-hidden rounded-[28px] bg-card" : "overflow-hidden rounded-[28px]"
         }
         style={{ borderCurve: "continuous" }}
       >
