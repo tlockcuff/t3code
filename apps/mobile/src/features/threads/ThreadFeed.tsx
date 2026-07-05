@@ -277,7 +277,7 @@ function MarkdownCodeBlock(props: {
   readonly textColor: string;
   readonly theme: ReviewDiffTheme;
 }) {
-  const content = props.content.replace(/\n$/, "");
+  const content = props.content.replace(/\r?\n$/, "");
   const languageLabel = props.language?.trim() || "text";
   const highlighted = useMarkdownCodeHighlight({
     code: content,
