@@ -4,9 +4,9 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { MenuAction } from "@react-native-menu/menu";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import { memo, useCallback, useMemo, type ComponentProps } from "react";
-import { Pressable, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, useWindowDimensions, View } from "react-native";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
 import { AppText as Text } from "../../components/AppText";
@@ -95,13 +95,17 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
         >
           {props.threadCount}
         </Text>
-        <SymbolView
-          name={props.collapsed ? "chevron.right" : "chevron.down"}
-          size={compact ? 13 : 11}
-          tintColor={iconSubtleColor}
-          type="monochrome"
-          weight="semibold"
-        />
+        {/* Android: the open/closed folder icon alone carries the expanded
+            state; iOS keeps the trailing chevron. */}
+        {Platform.OS === "android" ? null : (
+          <SymbolView
+            name={props.collapsed ? "chevron.right" : "chevron.down"}
+            size={compact ? 13 : 11}
+            tintColor={iconSubtleColor}
+            type="monochrome"
+            weight="semibold"
+          />
+        )}
       </View>
     </Pressable>
   );
@@ -425,21 +429,28 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       simultaneousWithExternalGesture={props.simultaneousSwipeGesture}
       threadTitle={thread.title}
     >
-      {(close) => (
-        // Messages-style row actions: a real UIContextMenuInteraction on
-        // long-press / pointer right-click, with the row as the zoom preview.
-        // Requires the patched @react-native-menu (see
-        // patches/@react-native-menu__menu@2.0.0.patch): in long-press mode
-        // the interaction is hosted by the component view and the underlying
-        // UIButton passes touches through, so row taps keep working.
-        <ControlPillMenu
-          actions={THREAD_ROW_MENU_ACTIONS}
-          onPressAction={handleMenuAction}
-          shouldOpenOnLongPress
-        >
-          {rowContent(close)}
-        </ControlPillMenu>
-      )}
+      {(close) =>
+        // Android relies on swipe actions alone for now — the long-press
+        // popup duplicates them and Android's PopupMenu has no zoom-preview
+        // affordance, so the menu is disabled (not removed) there.
+        Platform.OS === "android" ? (
+          rowContent(close)
+        ) : (
+          // Messages-style row actions: a real UIContextMenuInteraction on
+          // long-press / pointer right-click, with the row as the zoom preview.
+          // Requires the patched @react-native-menu (see
+          // patches/@react-native-menu__menu@2.0.0.patch): in long-press mode
+          // the interaction is hosted by the component view and the underlying
+          // UIButton passes touches through, so row taps keep working.
+          <ControlPillMenu
+            actions={THREAD_ROW_MENU_ACTIONS}
+            onPressAction={handleMenuAction}
+            shouldOpenOnLongPress
+          >
+            {rowContent(close)}
+          </ControlPillMenu>
+        )
+      }
     </ThreadSwipeable>
   );
 });
