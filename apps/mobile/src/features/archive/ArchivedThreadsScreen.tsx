@@ -507,7 +507,7 @@ function ArchivedThreadRow(props: {
               </Text>
               <Text
                 className="text-xs text-foreground-tertiary"
-                style={{ fontVariant: ["tabular-nums"] }}
+                style={{ fontVariant: ["tabular-nums"], minWidth: 30, textAlign: "right" }}
               >
                 {timestamp}
               </Text>

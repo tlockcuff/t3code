@@ -1,5 +1,8 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/shell";
 import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
@@ -18,6 +21,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
+import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
@@ -40,6 +44,7 @@ import {
 } from "../home/homeListItems";
 import { buildHomeThreadGroups } from "../home/homeThreadList";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "../home/thread-swipe-actions";
+import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { WorkspaceConnectionStatus } from "../home/WorkspaceConnectionStatus";
 import { shouldShowWorkspaceConnectionStatus } from "../home/workspace-connection-status";
@@ -47,7 +52,12 @@ import { SidebarHeaderActions } from "./sidebar-header-actions";
 import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
 import { SidebarNavigationShell } from "./sidebar-navigation-shell";
-import { ThreadListGroupHeader, ThreadListRow, ThreadListShowMoreRow } from "./thread-list-items";
+import {
+  PendingTaskListRow,
+  ThreadListGroupHeader,
+  ThreadListRow,
+  ThreadListShowMoreRow,
+} from "./thread-list-items";
 
 /**
  * Shared capsule behind the sidebar header buttons — a native liquid-glass
@@ -100,6 +110,7 @@ interface ThreadNavigationSidebarProps {
   readonly selectedThreadKey: string | null;
   readonly onOpenSettings: () => void;
   readonly onOpenEnvironmentSettings: () => void;
+  readonly onNewThreadInProject: (project: EnvironmentProject) => void;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onRequestVisibility: () => void;
@@ -162,6 +173,8 @@ function ThreadNavigationSidebarPane(
   const headerIsOverContentRef = useRef(false);
   const sidebarScrollGesture = useMemo(() => Gesture.Native(), []);
   const { archiveThread, confirmDeleteThread } = useThreadListActions();
+  const pendingTasks = usePendingNewTasks();
+  const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
     () =>
       Object.values(savedConnectionsById)
@@ -188,13 +201,14 @@ function ThreadNavigationSidebarPane(
       buildHomeThreadGroups({
         projects,
         threads,
+        pendingTasks,
         environmentId: options.selectedEnvironmentId,
         searchQuery: props.searchQuery,
         projectSortOrder: options.projectSortOrder,
         threadSortOrder: options.threadSortOrder,
         projectGroupingMode: options.projectGroupingMode,
       }),
-    [options, projects, props.searchQuery, threads],
+    [options, pendingTasks, projects, props.searchQuery, threads],
   );
   const [groupDisplayStates, setGroupDisplayStates] = useState<
     ReadonlyMap<string, HomeGroupDisplayState>
@@ -403,9 +417,28 @@ function ThreadNavigationSidebarPane(
               isFirst={item.isFirst}
               groupKey={item.group.key}
               onGroupAction={updateGroupDisplay}
+              // Same gating as the compact Home list: aggregated groups have no
+              // single target project, and pending-project groups hold a
+              // placeholder shell rather than a real project.
+              newThreadTarget={item.group.newThreadTarget}
+              onNewThread={props.onNewThreadInProject}
               project={item.group.representative}
-              threadCount={item.group.threads.length}
+              threadCount={item.group.threads.length + item.group.pendingTasks.length}
               title={item.group.title}
+            />
+          );
+        case "pending-task":
+          return (
+            <PendingTaskListRow
+              variant="sidebar"
+              pendingTask={item.pendingTask}
+              environmentLabel={
+                savedConnectionsById[item.pendingTask.message.environmentId]?.environmentLabel ??
+                null
+              }
+              isLast={item.isLast}
+              onSelectPendingTask={openPendingTask}
+              onDeletePendingTask={confirmDeletePendingTask}
             />
           );
         case "thread": {
@@ -449,11 +482,14 @@ function ThreadNavigationSidebarPane(
     },
     [
       archiveThread,
+      confirmDeletePendingTask,
       confirmDeleteThread,
       handleSelectThread,
       handleSwipeableClose,
       handleSwipeableWillOpen,
+      openPendingTask,
       projectCwdByKey,
+      props.onNewThreadInProject,
       props.selectedThreadKey,
       props.width,
       savedConnectionsById,

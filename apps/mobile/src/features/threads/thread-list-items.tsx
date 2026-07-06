@@ -14,6 +14,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { relativeTime } from "../../lib/time";
 import { useThemeColor } from "../../lib/useThemeColor";
+import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useThreadPr } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
@@ -42,31 +43,54 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
   readonly isFirst: boolean;
   readonly groupKey: string;
   readonly onGroupAction: (key: string, action: HomeGroupDisplayAction) => void;
+  /** Project a quick new thread should target; null hides the button. */
+  readonly newThreadTarget?: EnvironmentProject | null;
+  readonly onNewThread?: (project: EnvironmentProject) => void;
 }) {
-  const iconSubtleColor = useThemeColor("--color-icon-subtle");
-  const { groupKey, onGroupAction } = props;
+  const iconMutedColor = useThemeColor("--color-icon-muted");
+  const { groupKey, onGroupAction, onNewThread } = props;
+  const newThreadTarget = props.newThreadTarget ?? null;
   const compact = props.variant === "compact";
   const handleToggle = useCallback(
     () => onGroupAction(groupKey, "toggle-collapsed"),
     [groupKey, onGroupAction],
   );
+  const handleNewThread = useCallback(() => {
+    if (newThreadTarget) {
+      onNewThread?.(newThreadTarget);
+    }
+  }, [newThreadTarget, onNewThread]);
+  const showNewThreadButton = onNewThread !== undefined && newThreadTarget !== null;
 
+  // The new-thread button is a SIBLING of the collapse toggle, not a child:
+  // nested touchables are unreachable to VoiceOver/TalkBack (the parent
+  // swallows focus). Row padding lives on the container (explicit styles —
+  // dynamic padding classes on Pressable did not apply reliably) so both
+  // children share one centerline; hitSlop restores the padded tap area.
+  const verticalHitSlop = { top: props.isFirst ? 8 : 24, bottom: 12 };
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ expanded: !props.collapsed }}
-      accessibilityLabel={`${props.title}, ${props.threadCount} threads`}
-      accessibilityHint={props.collapsed ? "Expands the project" : "Collapses the project"}
-      className={compact ? "bg-screen" : undefined}
-      onPress={handleToggle}
+    <View
+      className={compact ? "flex-row items-center bg-screen" : "flex-row items-center"}
+      style={{
+        minHeight: compact ? 44 : 36,
+        paddingLeft: compact ? 20 : 12,
+        // Compact right padding centers the 20pt plus glyph on the thread
+        // rows' trailing chevron column (18 + 13/2 ≈ 24.5 from the edge).
+        paddingRight: compact ? 14 : 12,
+        paddingBottom: compact ? 12 : 8,
+        paddingTop: props.isFirst ? (compact ? 8 : 4) : compact ? 24 : 20,
+      }}
     >
-      <View
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: !props.collapsed }}
+        accessibilityLabel={`${props.title}, ${props.threadCount} threads`}
+        accessibilityHint={props.collapsed ? "Expands the project" : "Collapses the project"}
         className={
-          compact
-            ? `flex-row items-center gap-2.5 px-5 pb-3 ${props.isFirst ? "pt-2" : "pt-6"}`
-            : `flex-row items-center gap-2 px-3 pb-2 ${props.isFirst ? "pt-1" : "pt-5"}`
+          compact ? "flex-1 flex-row items-center gap-2.5" : "flex-1 flex-row items-center gap-2"
         }
-        style={{ minHeight: compact ? 44 : 36 }}
+        hitSlop={{ ...verticalHitSlop, left: compact ? 20 : 12 }}
+        onPress={handleToggle}
       >
         <ProjectFavicon
           environmentId={props.project.environmentId}
@@ -95,19 +119,25 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
         >
           {props.threadCount}
         </Text>
-        {/* Android: the open/closed folder icon alone carries the expanded
-            state; iOS keeps the trailing chevron. */}
-        {Platform.OS === "android" ? null : (
+      </Pressable>
+      {showNewThreadButton ? (
+        <Pressable
+          accessibilityLabel={`Create new thread in ${props.title}`}
+          accessibilityRole="button"
+          hitSlop={{ ...verticalHitSlop, left: 10, right: 14 }}
+          onPress={handleNewThread}
+          style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1, paddingLeft: 12 })}
+        >
           <SymbolView
-            name={props.collapsed ? "chevron.right" : "chevron.down"}
-            size={compact ? 13 : 11}
-            tintColor={iconSubtleColor}
+            name="plus"
+            size={compact ? 20 : 16}
+            tintColor={iconMutedColor}
             type="monochrome"
-            weight="semibold"
+            weight="medium"
           />
-        )}
-      </View>
-    </Pressable>
+        </Pressable>
+      ) : null}
+    </View>
   );
 });
 
@@ -182,6 +212,173 @@ export const ThreadListShowMoreRow = memo(function ThreadListShowMoreRow(props: 
       {showsMore ? button("Show more", "chevron.down", handleShowMore) : null}
       {props.canShowLess ? button("Show less", "chevron.up", handleShowLess) : null}
     </View>
+  );
+});
+
+/* ─── Pending task row ───────────────────────────────────────────────── */
+
+const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+];
+
+/**
+ * A queued new task waiting in the outbox for its environment to reconnect.
+ * Tapping reopens the new-task composer with everything prefilled; the row
+ * disappears once the task is delivered and the real thread arrives.
+ */
+export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
+  readonly variant: ThreadListVariant;
+  readonly pendingTask: PendingNewTask;
+  readonly environmentLabel: string | null;
+  readonly isLast: boolean;
+  readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
+  readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
+}) {
+  const compact = props.variant === "compact";
+  const separatorColor = useThemeColor("--color-separator");
+  const iconSubtleColor = useThemeColor("--color-icon-subtle");
+  const foregroundColor = useThemeColor("--color-foreground");
+  const mutedColor = useThemeColor("--color-foreground-muted");
+  const pressedBackgroundColor = useThemeColor("--color-subtle");
+
+  const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
+  const timestamp = relativeTime(pendingTask.message.createdAt);
+  const subtitleParts = [props.environmentLabel, pendingTask.creation.branch].filter(
+    (part): part is string => Boolean(part),
+  );
+
+  const handleMenuAction = useCallback(
+    ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      if (nativeEvent.event === "delete") onDeletePendingTask(pendingTask);
+    },
+    [onDeletePendingTask, pendingTask],
+  );
+
+  const statusPill = (
+    <View
+      className="bg-zinc-500/12 dark:bg-zinc-500/16"
+      style={{ borderRadius: 99, paddingHorizontal: 6, paddingVertical: 2 }}
+    >
+      <Text className="text-3xs font-t3-bold text-zinc-600 dark:text-zinc-300">Pending</Text>
+    </View>
+  );
+
+  const subtitleRow =
+    subtitleParts.length > 0 ? (
+      <View className="flex-row items-center gap-1.5" style={{ marginTop: 1 }}>
+        <SymbolView
+          name="tray.and.arrow.up"
+          size={10}
+          tintColor={compact ? iconSubtleColor : mutedColor}
+          type="monochrome"
+        />
+        <Text
+          className={compact ? "text-sm text-foreground-muted" : "text-xs"}
+          numberOfLines={1}
+          style={compact ? { flexShrink: 1 } : { flexShrink: 1, color: mutedColor }}
+        >
+          {subtitleParts.join(" · ")}
+        </Text>
+      </View>
+    ) : null;
+
+  const rowContent = compact ? (
+    <Pressable
+      accessibilityHint="Opens the queued task for editing"
+      accessibilityLabel={pendingTask.title}
+      accessibilityRole="button"
+      className="bg-screen"
+      onPress={() => onSelectPendingTask(pendingTask)}
+      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+    >
+      <View
+        style={{
+          paddingLeft: THREAD_LIST_COMPACT_INSET,
+          paddingRight: 18,
+          paddingTop: 10,
+        }}
+      >
+        <View
+          style={{
+            gap: 3,
+            borderBottomWidth: props.isLast ? 0 : 1,
+            borderBottomColor: separatorColor,
+            paddingBottom: 10,
+          }}
+        >
+          <View className="flex-row items-center justify-between gap-2">
+            <Text className="flex-1 text-lg font-t3-bold text-foreground" numberOfLines={1}>
+              {pendingTask.title}
+            </Text>
+            <View className="flex-row items-center gap-2">
+              {statusPill}
+              <Text
+                className="text-base text-foreground-tertiary"
+                style={{ fontVariant: ["tabular-nums"] }}
+              >
+                {timestamp}
+              </Text>
+              <SymbolView
+                name="chevron.right"
+                size={13}
+                tintColor={iconSubtleColor}
+                type="monochrome"
+              />
+            </View>
+          </View>
+          {subtitleRow}
+        </View>
+      </View>
+    </Pressable>
+  ) : (
+    <Pressable
+      accessibilityHint="Opens the queued task for editing"
+      accessibilityLabel={pendingTask.title}
+      accessibilityRole="button"
+      onPress={() => onSelectPendingTask(pendingTask)}
+      style={({ pressed }) => ({
+        backgroundColor: pressed ? pressedBackgroundColor : "transparent",
+        borderRadius: SIDEBAR_ROW_RADIUS,
+        cursor: "pointer",
+        minHeight: 64,
+        justifyContent: "center",
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+      })}
+    >
+      <View style={{ gap: 3 }}>
+        <View className="flex-row items-center justify-between gap-2">
+          <Text
+            className="flex-1 text-base font-t3-medium"
+            numberOfLines={1}
+            style={{ color: foregroundColor }}
+          >
+            {pendingTask.title}
+          </Text>
+          <View className="flex-row items-center gap-2">
+            {statusPill}
+            <Text
+              className="text-xs"
+              numberOfLines={1}
+              style={{ color: mutedColor, fontVariant: ["tabular-nums"] }}
+            >
+              {timestamp}
+            </Text>
+          </View>
+        </View>
+        {subtitleRow}
+      </View>
+    </Pressable>
+  );
+
+  return (
+    <ControlPillMenu
+      actions={PENDING_TASK_MENU_ACTIONS}
+      onPressAction={handleMenuAction}
+      shouldOpenOnLongPress
+    >
+      {rowContent}
+    </ControlPillMenu>
   );
 });
 
