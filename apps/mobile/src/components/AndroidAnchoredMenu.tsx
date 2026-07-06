@@ -66,6 +66,10 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
   const close = useCallback(() => {
     setAnchor(null);
     setPath([]);
+    // Drop the measured height so the next presentation re-measures; a stale
+    // value would let an opens-up menu mount at the wrong position for a
+    // frame (keyboard dismissed, rotation, different insets).
+    setRootHeight(null);
   }, []);
 
   const open = useCallback(() => {
