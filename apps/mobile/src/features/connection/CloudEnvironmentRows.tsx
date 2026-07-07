@@ -130,9 +130,26 @@ export function CloudEnvironmentRows(props: {
             Could not load T3 Connect environments
           </Text>
           <Text className="text-sm text-foreground-muted">{controller.relayDiscovery.error}</Text>
-          {controller.relayDiscovery.errorTraceId ? (
-            <CopyTraceIdButton traceId={controller.relayDiscovery.errorTraceId} />
-          ) : null}
+          <View className="flex-row items-center gap-2">
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void controller.refreshRelayEnvironments();
+              }}
+              className="flex-row items-center gap-1.5 rounded-full bg-subtle px-3 py-2 active:opacity-70"
+            >
+              <SymbolView
+                name="arrow.clockwise"
+                size={12}
+                tintColor={iconColor}
+                type="monochrome"
+              />
+              <Text className="text-xs font-t3-bold text-foreground">Try again</Text>
+            </Pressable>
+            {controller.relayDiscovery.errorTraceId ? (
+              <CopyTraceIdButton traceId={controller.relayDiscovery.errorTraceId} />
+            ) : null}
+          </View>
         </View>
       ) : (
         <View collapsable={false} className="rounded-[24px] bg-card p-5">
