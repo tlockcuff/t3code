@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import type { ServerProvider } from "@t3tools/contracts";
 import { CircleCheckIcon, DownloadIcon, LoaderIcon, TriangleAlertIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { primaryServerProvidersAtom } from "../../state/server";
 import {
@@ -100,9 +100,9 @@ export function SidebarProviderUpdatePill() {
   const [renderedView, setRenderedView] = useState<ProviderUpdateSidebarPillView | null>(
     () => view,
   );
-  const [pendingView, setPendingView] = useState<ProviderUpdateSidebarPillView | null>(null);
+  const pendingViewRef = useRef<ProviderUpdateSidebarPillView | null>(null);
   const [exitingKey, setExitingKey] = useState<string | null>(null);
-  const [dismissAfterExitKey, setDismissAfterExitKey] = useState<string | null>(null);
+  const dismissAfterExitKeyRef = useRef<string | null>(null);
 
   const openProviderSettings = useCallback(() => {
     void navigate({ to: "/settings/providers" });
@@ -120,9 +120,9 @@ export function SidebarProviderUpdatePill() {
       if (exitingKey === key) {
         return;
       }
-      setPendingView(nextView);
+      pendingViewRef.current = nextView;
+      dismissAfterExitKeyRef.current = dismissKey ?? null;
       setExitingKey(key);
-      setDismissAfterExitKey(dismissKey ?? null);
     },
     [exitingKey],
   );
@@ -161,13 +161,13 @@ export function SidebarProviderUpdatePill() {
         if (!displayedView || exitingKey !== displayedView.key) {
           return;
         }
-        if (dismissAfterExitKey === displayedView.key) {
+        if (dismissAfterExitKeyRef.current === displayedView.key) {
           setDismissedKeys((previous) => new Set(previous).add(displayedView.key));
         }
-        setRenderedView(pendingView);
-        setPendingView(null);
+        setRenderedView(pendingViewRef.current);
+        pendingViewRef.current = null;
         setExitingKey(null);
-        setDismissAfterExitKey(null);
+        dismissAfterExitKeyRef.current = null;
       }}
     >
       {showDismissProgress ? (
