@@ -21,6 +21,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
+import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
@@ -133,6 +134,7 @@ function LocalSettingsRouteScreen() {
 function ConfiguredSettingsRouteScreen() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { expand: expandClerkSheet } = useClerkSettingsSheetDetent();
@@ -467,22 +469,32 @@ function ConfiguredSettingsRouteScreen() {
           <SettingsSwitchRow
             icon="bell.badge"
             label="Device Notifications"
-            disabled={notificationStatus === "checking" || notificationStatus === "unsupported"}
+            disabled={
+              !agentAwarenessPushAvailable ||
+              notificationStatus === "checking" ||
+              notificationStatus === "unsupported"
+            }
             // Only reads as on when this device is actually registered with the
             // relay; otherwise notifications cannot be delivered regardless of
             // the local iOS permission.
-            value={notificationStatus === "enabled" && deviceRegistered}
+            value={
+              agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered
+            }
             onValueChange={handleDeviceNotificationsChange}
           />
           <SettingsSwitchRow
             disabled={
-              !isLoaded || liveActivityStatus === "checking" || liveActivityStatus === "linking"
+              !agentAwarenessPushAvailable ||
+              !isLoaded ||
+              liveActivityStatus === "checking" ||
+              liveActivityStatus === "linking"
             }
             icon="bolt.circle"
             label="Live Activity Updates"
             // Same gate: a saved preference is meaningless until the device
             // registration the relay needs to push updates has succeeded.
             value={
+              agentAwarenessPushAvailable &&
               (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
               deviceRegistered
             }
