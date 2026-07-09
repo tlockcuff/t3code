@@ -42,15 +42,8 @@ function useInitialProviderVisibleAfterIso(
   providers: ReadonlyArray<Pick<ServerProvider, "checkedAt">>,
 ): string | undefined {
   const latestCheckedAt = latestProviderCheckedAt(providers);
-  const [visibleAfterIso, setVisibleAfterIso] = useState<string | undefined>(() => latestCheckedAt);
-
-  useEffect(() => {
-    if (visibleAfterIso === undefined && latestCheckedAt !== undefined) {
-      setVisibleAfterIso(latestCheckedAt);
-    }
-  }, [latestCheckedAt, visibleAfterIso]);
-
-  return visibleAfterIso ?? latestCheckedAt;
+  const [initialVisibleAfterIso] = useState<string | undefined>(() => latestCheckedAt);
+  return initialVisibleAfterIso ?? latestCheckedAt;
 }
 
 function useProviderUpdatePillTransition(view: ProviderUpdateSidebarPillView | null) {
