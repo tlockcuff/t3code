@@ -2,7 +2,6 @@ import * as QuickActions from "expo-quick-actions";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { useLinkTo, type NavigationState } from "@react-navigation/native";
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 
 import {
   loadRecentThreadShortcuts,
@@ -10,39 +9,12 @@ import {
   type RecentThreadShortcut,
 } from "../../persistence/imperative";
 import { useThreadShell } from "../../state/entities";
-import { buildShortcutActions, shortcutHref, withRecentThreadShortcut } from "./appShortcuts";
-
-function firstRouteParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
-}
-
-function activeThreadRef(state: NavigationState): ScopedThreadRef | null {
-  const route = state.routes[state.index];
-  if (route?.name !== "Thread") {
-    return null;
-  }
-
-  const params = route.params as
-    | {
-        readonly environmentId?: string | string[];
-        readonly threadId?: string | string[];
-      }
-    | undefined;
-  const environmentId = firstRouteParam(params?.environmentId);
-  const threadId = firstRouteParam(params?.threadId);
-  if (!environmentId || !threadId) {
-    return null;
-  }
-
-  return {
-    environmentId: EnvironmentId.make(environmentId),
-    threadId: ThreadId.make(threadId),
-  };
-}
+import {
+  activeThreadRef,
+  buildShortcutActions,
+  shortcutHref,
+  withRecentThreadShortcut,
+} from "./appShortcuts";
 
 /**
  * Owns the launcher app shortcuts (Android long-press menu): keeps the
@@ -87,6 +59,14 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
   // null until the persisted list loads; recording waits on it so the first
   // thread opened after a cold start cannot clobber older entries.
   const [recents, setRecents] = useState<ReadonlyArray<RecentThreadShortcut> | null>(null);
+  // Gates storage writes: a failed load falls back to an empty in-memory
+  // list (so the launcher still gets the "New task" item), but persisting
+  // that fallback would erase valid history over a transient read error.
+  // Real thread opens flip this on — by then the list is the new truth.
+  const persistableRef = useRef(false);
+  // Saves are fire-and-forget; chaining them keeps an older list from
+  // finishing after (and overwriting) a newer one.
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
     if (Platform.OS !== "android") {
@@ -95,13 +75,16 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
 
     let cancelled = false;
     void loadRecentThreadShortcuts()
-      .catch((error) => {
-        console.warn("[app-shortcuts] failed to load recent threads", error);
-        return [] as ReadonlyArray<RecentThreadShortcut>;
-      })
       .then((threads) => {
         if (!cancelled) {
+          persistableRef.current = true;
           setRecents(threads);
+        }
+      })
+      .catch((error) => {
+        console.warn("[app-shortcuts] failed to load recent threads", error);
+        if (!cancelled) {
+          setRecents([]);
         }
       });
     return () => {
@@ -120,11 +103,16 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
 
     // withRecentThreadShortcut returns the same array when nothing changed,
     // so React bails out and the persist effect below does not re-fire.
-    setRecents((current) =>
-      current === null
-        ? current
-        : withRecentThreadShortcut(current, { environmentId, threadId, title }),
-    );
+    setRecents((current) => {
+      if (current === null) {
+        return current;
+      }
+      const next = withRecentThreadShortcut(current, { environmentId, threadId, title });
+      if (next !== current) {
+        persistableRef.current = true;
+      }
+      return next;
+    });
   }, [loaded, environmentId, threadId, title]);
 
   useEffect(() => {
@@ -132,9 +120,15 @@ function useRecentThreadShortcutSync(state: NavigationState): void {
       return;
     }
 
-    void saveRecentThreadShortcuts(recents).catch((error) => {
-      console.warn("[app-shortcuts] failed to persist recent threads", error);
-    });
+    if (persistableRef.current) {
+      saveQueueRef.current = saveQueueRef.current.then(
+        () =>
+          saveRecentThreadShortcuts(recents).catch((error) => {
+            console.warn("[app-shortcuts] failed to persist recent threads", error);
+          }),
+        () => undefined,
+      );
+    }
     void QuickActions.setItems(buildShortcutActions(recents)).catch((error) => {
       console.warn("[app-shortcuts] failed to update launcher shortcuts", error);
     });
