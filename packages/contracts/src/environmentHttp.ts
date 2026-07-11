@@ -36,6 +36,8 @@ import {
 import {
   RelayCloudEnvironmentHealthRequest,
   RelayCloudMintCredentialRequest,
+  RelayDeviceRegistrationRequest,
+  RelayDeviceUnregistrationParams,
   RelayEnvironmentConfigRequest,
   RelayEnvironmentHealthResponse,
   RelayEnvironmentLinkProof,
@@ -550,8 +552,46 @@ export class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+export const EnvironmentPushRegisterResult = Schema.Struct({
+  registered: Schema.Boolean,
+});
+export type EnvironmentPushRegisterResult = typeof EnvironmentPushRegisterResult.Type;
+
+export const EnvironmentPushUnregisterResult = Schema.Struct({
+  unregistered: Schema.Boolean,
+});
+export type EnvironmentPushUnregisterResult = typeof EnvironmentPushUnregisterResult.Type;
+
+const EnvironmentPushOperationErrors = [
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+
+// Self-hosted push registration: a paired device POSTs its APNs token here
+// instead of to the managed relay, authenticated by its existing environment
+// session (no Clerk/DPoP relay handshake needed).
+export class EnvironmentPushHttpApi extends HttpApiGroup.make("push")
+  .add(
+    HttpApiEndpoint.post("registerDevice", "/api/push/devices", {
+      headers: OptionalBearerHeaders,
+      payload: RelayDeviceRegistrationRequest,
+      success: EnvironmentPushRegisterResult,
+      error: EnvironmentPushOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.delete("unregisterDevice", "/api/push/devices/:deviceId", {
+      headers: OptionalBearerHeaders,
+      params: RelayDeviceUnregistrationParams,
+      success: EnvironmentPushUnregisterResult,
+      error: EnvironmentPushOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
-  .add(EnvironmentConnectHttpApi) {}
+  .add(EnvironmentConnectHttpApi)
+  .add(EnvironmentPushHttpApi) {}

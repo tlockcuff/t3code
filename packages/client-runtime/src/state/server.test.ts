@@ -80,6 +80,37 @@ describe("server state projection", () => {
     expect(result.latestEvent.type).toBe("settingsUpdated");
   });
 
+  it("applies upstream sync updates to the projected snapshot", () => {
+    const snapshot = applyServerConfigProjection(Option.none(), {
+      version: 1,
+      type: "snapshot",
+      config: CONFIG,
+    });
+    const upstreamSync = {
+      status: "behind" as const,
+      checkedAt: "2026-07-11T00:00:00.000Z",
+      behindBy: 2,
+      aheadBy: 0,
+      installRoot: "/repo",
+      upstreamRemote: "upstream",
+      upstreamUrl: "git@github.com:pingdotgg/t3code.git",
+      upstreamRef: "upstream/main",
+      localSha: "abc",
+      upstreamSha: "def",
+      suggestedCommand: "git fetch upstream && git merge upstream/main",
+      message: "2 commits available from upstream/main.",
+    };
+    const projected = applyServerConfigProjection(snapshot, {
+      version: 1,
+      type: "upstreamSyncUpdated",
+      payload: { upstreamSync },
+    });
+
+    const result = Option.getOrThrow(projected);
+    expect(result.config.upstreamSync).toBe(upstreamSync);
+    expect(result.latestEvent.type).toBe("upstreamSyncUpdated");
+  });
+
   it("retains welcome when a ready event follows in the same stream chunk", () => {
     const welcome = {
       environment: {} as ServerLifecycleWelcomePayload["environment"],

@@ -14,6 +14,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -28,6 +29,9 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  listContextUsage: "orchestration.listContextUsage",
+  listTokenUsageLedger: "orchestration.listTokenUsageLedger",
+  getMachineUsageHistory: "orchestration.getMachineUsageHistory",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -1240,6 +1244,120 @@ export type OrchestrationReplayEventsInput = typeof OrchestrationReplayEventsInp
 const OrchestrationReplayEventsResult = Schema.Array(OrchestrationEvent);
 export type OrchestrationReplayEventsResult = typeof OrchestrationReplayEventsResult.Type;
 
+/**
+ * Latest context-window snapshot for one thread, derived from
+ * `context-window.updated` projection activities.
+ */
+export const OrchestrationContextUsageThread = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  projectTitle: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  archivedAt: Schema.NullOr(IsoDateTime),
+  updatedAt: IsoDateTime,
+  usedTokens: NonNegativeInt,
+  maxTokens: Schema.NullOr(PositiveInt),
+  totalProcessedTokens: Schema.NullOr(NonNegativeInt),
+  inputTokens: Schema.NullOr(NonNegativeInt),
+  outputTokens: Schema.NullOr(NonNegativeInt),
+  cachedInputTokens: Schema.NullOr(NonNegativeInt),
+  compactsAutomatically: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationContextUsageThread = typeof OrchestrationContextUsageThread.Type;
+
+export const OrchestrationListContextUsageInput = Schema.Struct({
+  projectId: Schema.optionalKey(ProjectId),
+  includeArchived: Schema.optionalKey(Schema.Boolean),
+});
+export type OrchestrationListContextUsageInput = typeof OrchestrationListContextUsageInput.Type;
+
+export const OrchestrationListContextUsageResult = Schema.Struct({
+  threads: Schema.Array(OrchestrationContextUsageThread),
+});
+export type OrchestrationListContextUsageResult = typeof OrchestrationListContextUsageResult.Type;
+
+export const UsageHistoryDayKey = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
+export type UsageHistoryDayKey = typeof UsageHistoryDayKey.Type;
+
+export const OrchestrationTokenUsageTotals = Schema.Struct({
+  inputTokens: NonNegativeInt,
+  cachedInputTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  reasoningOutputTokens: NonNegativeInt,
+  totalTokens: NonNegativeInt,
+  estimatedCostUsd: Schema.Number,
+});
+export type OrchestrationTokenUsageTotals = typeof OrchestrationTokenUsageTotals.Type;
+
+export const OrchestrationTokenUsageLedgerRow = Schema.Struct({
+  day: UsageHistoryDayKey,
+  projectId: Schema.NullOr(ProjectId),
+  projectTitle: Schema.NullOr(TrimmedNonEmptyString),
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  providerName: Schema.NullOr(TrimmedNonEmptyString),
+  inputTokens: NonNegativeInt,
+  cachedInputTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  reasoningOutputTokens: NonNegativeInt,
+  totalTokens: NonNegativeInt,
+  estimatedCostUsd: Schema.Number,
+});
+export type OrchestrationTokenUsageLedgerRow = typeof OrchestrationTokenUsageLedgerRow.Type;
+
+export const OrchestrationListTokenUsageLedgerInput = Schema.Struct({
+  fromDay: Schema.optionalKey(UsageHistoryDayKey),
+  toDay: Schema.optionalKey(UsageHistoryDayKey),
+  projectId: Schema.optionalKey(ProjectId),
+});
+export type OrchestrationListTokenUsageLedgerInput =
+  typeof OrchestrationListTokenUsageLedgerInput.Type;
+
+export const OrchestrationListTokenUsageLedgerResult = Schema.Struct({
+  rows: Schema.Array(OrchestrationTokenUsageLedgerRow),
+  totals: OrchestrationTokenUsageTotals,
+  pricingVersion: TrimmedNonEmptyString,
+});
+export type OrchestrationListTokenUsageLedgerResult =
+  typeof OrchestrationListTokenUsageLedgerResult.Type;
+
+export const MachineUsageProviderId = Schema.Literals(["claude", "codex", "grok", "cursor"]);
+export type MachineUsageProviderId = typeof MachineUsageProviderId.Type;
+
+export const MachineUsageDayRow = Schema.Struct({
+  day: UsageHistoryDayKey,
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  totalTokens: NonNegativeInt,
+  inputTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  cachedInputTokens: NonNegativeInt,
+  cacheWriteTokens: NonNegativeInt,
+  estimatedCostUsd: Schema.Number,
+});
+export type MachineUsageDayRow = typeof MachineUsageDayRow.Type;
+
+export const MachineUsageSource = Schema.Struct({
+  provider: MachineUsageProviderId,
+  status: Schema.Literals(["ok", "missing", "error"]),
+  error: Schema.optional(TrimmedNonEmptyString),
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
+  daily: Schema.Array(MachineUsageDayRow),
+});
+export type MachineUsageSource = typeof MachineUsageSource.Type;
+
+export const OrchestrationGetMachineUsageHistoryInput = Schema.Struct({
+  fromDay: Schema.optionalKey(UsageHistoryDayKey),
+  toDay: Schema.optionalKey(UsageHistoryDayKey),
+});
+export type OrchestrationGetMachineUsageHistoryInput =
+  typeof OrchestrationGetMachineUsageHistoryInput.Type;
+
+export const OrchestrationGetMachineUsageHistoryResult = Schema.Struct({
+  sources: Schema.Array(MachineUsageSource),
+  pricingVersion: TrimmedNonEmptyString,
+});
+export type OrchestrationGetMachineUsageHistoryResult =
+  typeof OrchestrationGetMachineUsageHistoryResult.Type;
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -1260,6 +1378,18 @@ export const OrchestrationRpcSchemas = {
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
+  },
+  listContextUsage: {
+    input: OrchestrationListContextUsageInput,
+    output: OrchestrationListContextUsageResult,
+  },
+  listTokenUsageLedger: {
+    input: OrchestrationListTokenUsageLedgerInput,
+    output: OrchestrationListTokenUsageLedgerResult,
+  },
+  getMachineUsageHistory: {
+    input: OrchestrationGetMachineUsageHistoryInput,
+    output: OrchestrationGetMachineUsageHistoryResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,

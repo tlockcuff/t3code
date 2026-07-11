@@ -11,6 +11,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
+  OrchestrationListContextUsageResult,
   ProjectCreatedPayload,
   ProjectMetaUpdatedPayload,
   OrchestrationProposedPlan,
@@ -741,5 +742,36 @@ it.effect("ModelSelection rejects malformed instance ids", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+const decodeListContextUsageResult = Schema.decodeUnknownEffect(
+  OrchestrationListContextUsageResult,
+);
+
+it.effect("parses context usage listing results", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeListContextUsageResult({
+      threads: [
+        {
+          threadId: "thread-1",
+          projectId: "project-1",
+          projectTitle: "Demo",
+          title: "Thread",
+          archivedAt: null,
+          updatedAt: "2026-07-10T12:00:00.000Z",
+          usedTokens: 12_000,
+          maxTokens: 200_000,
+          totalProcessedTokens: 40_000,
+          inputTokens: null,
+          outputTokens: null,
+          cachedInputTokens: null,
+          compactsAutomatically: true,
+        },
+      ],
+    });
+    assert.strictEqual(parsed.threads.length, 1);
+    assert.strictEqual(parsed.threads[0]?.usedTokens, 12_000);
+    assert.strictEqual(parsed.threads[0]?.compactsAutomatically, true);
   }),
 );

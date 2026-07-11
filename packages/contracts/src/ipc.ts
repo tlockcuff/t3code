@@ -92,6 +92,12 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
+  OrchestrationListContextUsageInput,
+  OrchestrationListContextUsageResult,
+  OrchestrationListTokenUsageLedgerInput,
+  OrchestrationListTokenUsageLedgerResult,
+  OrchestrationGetMachineUsageHistoryInput,
+  OrchestrationGetMachineUsageHistoryResult,
   OrchestrationShellSnapshot,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeThreadInput,
@@ -1210,6 +1216,15 @@ export interface EnvironmentApi {
       input: OrchestrationGetFullThreadDiffInput,
     ) => Promise<OrchestrationGetFullThreadDiffResult>;
     getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
+    listContextUsage: (
+      input?: OrchestrationListContextUsageInput,
+    ) => Promise<OrchestrationListContextUsageResult>;
+    listTokenUsageLedger: (
+      input?: OrchestrationListTokenUsageLedgerInput,
+    ) => Promise<OrchestrationListTokenUsageLedgerResult>;
+    getMachineUsageHistory: (
+      input?: OrchestrationGetMachineUsageHistoryInput,
+    ) => Promise<OrchestrationGetMachineUsageHistoryResult>;
     subscribeShell: (
       callback: (event: OrchestrationShellStreamItem) => void,
       options?: {

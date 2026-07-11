@@ -54,6 +54,10 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import {
+  recordUsageLedgerFromActivity,
+  syncUsageLedgerAfterThreadRevert,
+} from "../../usage/usageLedger.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -955,6 +959,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             createdAt: event.payload.activity.createdAt,
           });
+          if (event.payload.activity.kind === "context-window.updated") {
+            yield* recordUsageLedgerFromActivity({
+              activityId: event.payload.activity.id,
+              threadId: event.payload.threadId,
+              turnId: event.payload.activity.turnId,
+              createdAt: event.payload.activity.createdAt,
+              payload: event.payload.activity.payload,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          }
           return;
 
         case "thread.reverted": {
@@ -981,6 +994,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          yield* syncUsageLedgerAfterThreadRevert(event.payload.threadId, event.occurredAt).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           return;
         }
 

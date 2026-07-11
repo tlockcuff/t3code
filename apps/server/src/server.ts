@@ -71,6 +71,11 @@ import * as SourceControlRepositoryService from "./sourceControl/SourceControlRe
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import * as ApnsConfig from "./push/ApnsConfig.ts";
+import * as ApnsClient from "./push/ApnsClient.ts";
+import * as ApnsProviderTokens from "./push/ApnsProviderTokens.ts";
+import * as DeviceTokenStore from "./push/DeviceTokenStore.ts";
+import * as PushNotifier from "./push/PushNotifier.ts";
 import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "./auth/http.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -82,6 +87,7 @@ import * as CloudCliState from "./cloud/CliState.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as UpstreamSyncMonitor from "./install/UpstreamSyncMonitor.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -89,6 +95,7 @@ import {
   persistServerRuntimeState,
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
+import { pushHttpApiLayer } from "./push/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
@@ -156,13 +163,34 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
+// Self-hosted APNs push. ApnsConfig reads env + loads the .p8 (needs
+// FileSystem); ApnsClient needs an HttpClient + provider tokens; DeviceTokenStore
+// needs SqlClient (from the downstream persistence merge, like AgentAwarenessRelay).
+// PushNotifier composes them and is consumed by AgentAwarenessRelay. When no
+// APNS_* env is set, PushNotifier.enabled is false and delivery no-ops.
+// ApnsClient talks to APNs over node:http2 directly (APNs is HTTP/2-only, which
+// Node's fetch can't do), so no HttpClient is needed here. ApnsConfig needs
+// FileSystem + ServerConfig (for the state-dir config fallback); DeviceTokenStore
+// needs SqlClient (from the downstream persistence merge).
+const PushLayerLive = PushNotifier.layer.pipe(
+  Layer.provide(ApnsClient.layer.pipe(Layer.provide(ApnsProviderTokens.layer))),
+  Layer.provide(DeviceTokenStore.layer),
+  Layer.provideMerge(ApnsConfig.layer),
+  Layer.provide(PlatformServicesLive),
+);
+
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
-  Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+  Layer.provideMerge(
+    AgentAwarenessRelay.layer.pipe(
+      Layer.provide(ServerSecretStore.layer),
+      Layer.provide(PushLayerLive),
+    ),
+  ),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
 
@@ -332,6 +360,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(ProcessDiagnostics.layer),
   Layer.provideMerge(ProcessResourceMonitor.layer),
+  Layer.provideMerge(UpstreamSyncMonitor.layer),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
@@ -349,6 +378,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(pushHttpApiLayer.pipe(Layer.provide(DeviceTokenStore.layer))),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),

@@ -51,9 +51,12 @@ import {
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetMachineUsageHistoryInput,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
+  OrchestrationListContextUsageInput,
+  OrchestrationListTokenUsageLedgerInput,
   OrchestrationReplayEventsError,
   OrchestrationReplayEventsInput,
   OrchestrationRpcSchemas,
@@ -629,6 +632,33 @@ export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationListContextUsageRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listContextUsage,
+  {
+    payload: OrchestrationListContextUsageInput,
+    success: OrchestrationRpcSchemas.listContextUsage.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationListTokenUsageLedgerRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listTokenUsageLedger,
+  {
+    payload: OrchestrationListTokenUsageLedgerInput,
+    success: OrchestrationRpcSchemas.listTokenUsageLedger.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationGetMachineUsageHistoryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getMachineUsageHistory,
+  {
+    payload: OrchestrationGetMachineUsageHistoryInput,
+    success: OrchestrationRpcSchemas.getMachineUsageHistory.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -748,6 +778,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationReplayEventsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
+  WsOrchestrationListContextUsageRpc,
+  WsOrchestrationListTokenUsageLedgerRpc,
+  WsOrchestrationGetMachineUsageHistoryRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

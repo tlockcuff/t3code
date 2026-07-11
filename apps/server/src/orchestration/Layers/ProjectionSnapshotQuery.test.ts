@@ -562,6 +562,165 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("lists latest context-window usage per thread and project", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-usage',
+          'Usage Project',
+          '/tmp/usage-project',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-07-10T00:00:00.000Z',
+          '2026-07-10T00:00:01.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at
+        )
+        VALUES
+          (
+            'thread-usage-active',
+            'project-usage',
+            'Active Usage Thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-10T00:00:02.000Z',
+            '2026-07-10T00:00:03.000Z',
+            NULL,
+            NULL
+          ),
+          (
+            'thread-usage-archived',
+            'project-usage',
+            'Archived Usage Thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-07-10T00:00:04.000Z',
+            '2026-07-10T00:00:05.000Z',
+            '2026-07-10T00:00:06.000Z',
+            NULL
+          )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          created_at,
+          sequence
+        )
+        VALUES
+          (
+            'activity-old',
+            'thread-usage-active',
+            NULL,
+            'info',
+            'context-window.updated',
+            'Context window updated',
+            '{"usedTokens":1000,"maxTokens":100000}',
+            '2026-07-10T00:01:00.000Z',
+            1
+          ),
+          (
+            'activity-new',
+            'thread-usage-active',
+            NULL,
+            'info',
+            'context-window.updated',
+            'Context window updated',
+            '{"usedTokens":42000,"maxTokens":100000,"totalProcessedTokens":90000}',
+            '2026-07-10T00:02:00.000Z',
+            2
+          ),
+          (
+            'activity-archived',
+            'thread-usage-archived',
+            NULL,
+            'info',
+            'context-window.updated',
+            'Context window updated',
+            '{"usedTokens":8000,"maxTokens":200000}',
+            '2026-07-10T00:03:00.000Z',
+            1
+          )
+      `;
+
+      const activeOnly = yield* snapshotQuery.listContextUsage();
+      assert.deepEqual(
+        activeOnly.threads.map((thread) => thread.threadId),
+        [ThreadId.make("thread-usage-active")],
+      );
+      assert.equal(activeOnly.threads[0]?.usedTokens, 42_000);
+      assert.equal(activeOnly.threads[0]?.maxTokens, 100_000);
+      assert.equal(activeOnly.threads[0]?.totalProcessedTokens, 90_000);
+      assert.equal(activeOnly.threads[0]?.projectTitle, "Usage Project");
+
+      const withArchived = yield* snapshotQuery.listContextUsage({ includeArchived: true });
+      assert.deepEqual(
+        withArchived.threads.map((thread) => thread.threadId),
+        [ThreadId.make("thread-usage-archived"), ThreadId.make("thread-usage-active")],
+      );
+    }),
+  );
+
   it.effect(
     "reads targeted project, thread, and count queries without hydrating the full snapshot",
     () =>

@@ -36,6 +36,7 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
+  OrchestrationRpcSchemas,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -70,6 +71,11 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { readClaudeStatsCacheUsage } from "./usage/claudeStatsCache.ts";
+import { readCodexSessionUsage } from "./usage/codexSessionUsage.ts";
+import { readCursorUsageHistory } from "./usage/cursorUsageHistory.ts";
+import { readGrokLogUsage } from "./usage/grokLogUsage.ts";
+import { MODEL_PRICING_VERSION } from "./usage/modelPricing.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -99,6 +105,7 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as UpstreamSyncMonitor from "./install/UpstreamSyncMonitor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -283,6 +290,9 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.replayEvents, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.subscribeShell, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.listContextUsage, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.listTokenUsageLedger, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.getMachineUsageHistory, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.subscribeThread, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetConfig, AuthOrchestrationReadScope],
   [WS_METHODS.serverRefreshProviders, AuthOrchestrationOperateScope],
@@ -435,6 +445,7 @@ const makeWsRpcLayer = (
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const upstreamSyncMonitor = yield* UpstreamSyncMonitor.UpstreamSyncMonitor;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -914,6 +925,7 @@ const makeWsRpcLayer = (
         );
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
+        const upstreamSync = yield* upstreamSyncMonitor.getState;
 
         return {
           environment,
@@ -935,6 +947,7 @@ const makeWsRpcLayer = (
             otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
           },
           settings,
+          upstreamSync,
         };
       });
 
@@ -1143,6 +1156,85 @@ const makeWsRpcLayer = (
                 (cause) =>
                   new OrchestrationGetSnapshotError({
                     message: "Failed to load archived orchestration shell snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listContextUsage]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listContextUsage,
+            projectionSnapshotQuery.listContextUsage(input).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("orchestration context usage load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load context usage",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listTokenUsageLedger]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listTokenUsageLedger,
+            projectionSnapshotQuery.listTokenUsageLedger(input).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("orchestration token usage ledger load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load T3 token usage ledger",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getMachineUsageHistory]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getMachineUsageHistory,
+            Effect.gen(function* () {
+              const range = {
+                ...(input.fromDay !== undefined ? { fromDay: input.fromDay } : {}),
+                ...(input.toDay !== undefined ? { toDay: input.toDay } : {}),
+              };
+              const claude = readClaudeStatsCacheUsage(range);
+              const codex = readCodexSessionUsage(range);
+              const [grok, cursor] = yield* Effect.promise(() =>
+                Promise.all([readGrokLogUsage(range), readCursorUsageHistory(range)]),
+              );
+              return {
+                sources: [claude, codex, grok, cursor].map((source) => ({
+                  provider: source.provider,
+                  status: source.status,
+                  daily: source.daily.map((row) => ({
+                    ...row,
+                    model: row.model && row.model.trim().length > 0 ? row.model.trim() : null,
+                  })),
+                  ...(source.error ? { error: source.error } : {}),
+                  ...(source.sourcePath ? { sourcePath: source.sourcePath } : {}),
+                })),
+                pricingVersion: MODEL_PRICING_VERSION,
+              };
+            }).pipe(
+              Effect.flatMap((result) =>
+                Schema.decodeUnknownEffect(OrchestrationRpcSchemas.getMachineUsageHistory.output)(
+                  result,
+                ),
+              ),
+              Effect.tapError((cause) =>
+                Effect.logError("orchestration machine usage history load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load machine usage history",
                     cause,
                   }),
               ),
@@ -1787,6 +1879,13 @@ const makeWsRpcLayer = (
                   payload: { settings },
                 })),
               );
+              const upstreamSyncUpdates = upstreamSyncMonitor.streamChanges.pipe(
+                Stream.map((upstreamSync) => ({
+                  version: 1 as const,
+                  type: "upstreamSyncUpdated" as const,
+                  payload: { upstreamSync },
+                })),
+              );
 
               yield* providerRegistry
                 .refresh()
@@ -1794,7 +1893,7 @@ const makeWsRpcLayer = (
 
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
-                Stream.merge(providerStatuses, settingsUpdates),
+                Stream.merge(providerStatuses, Stream.merge(settingsUpdates, upstreamSyncUpdates)),
               );
 
               return Stream.concat(

@@ -5,7 +5,11 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
-import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+} from "./providerInstance.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -38,6 +42,17 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 );
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
+
+export const DEFAULT_SIDEBAR_USAGE_DRIVERS: ReadonlyArray<ProviderDriverKind> = [
+  ProviderDriverKind.make("claudeAgent"),
+  ProviderDriverKind.make("codex"),
+  ProviderDriverKind.make("cursor"),
+  ProviderDriverKind.make("grok"),
+];
+
+export const SidebarUsageDisplayMode = Schema.Literals(["used", "remaining"]);
+export type SidebarUsageDisplayMode = typeof SidebarUsageDisplayMode.Type;
+export const DEFAULT_SIDEBAR_USAGE_DISPLAY_MODE: SidebarUsageDisplayMode = "used";
 
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -87,6 +102,15 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
+  ),
+  // Which provider usage cards appear in the bottom sidebar. Defaults to all
+  // supported usage drivers; empty means hide the usage block entirely.
+  sidebarUsageDrivers: Schema.Array(ProviderDriverKind).pipe(
+    Schema.withDecodingDefault(Effect.succeed([...DEFAULT_SIDEBAR_USAGE_DRIVERS])),
+  ),
+  // Whether sidebar usage meters show percent used or percent remaining.
+  sidebarUsageDisplayMode: SidebarUsageDisplayMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_USAGE_DISPLAY_MODE)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -566,6 +590,8 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  sidebarUsageDrivers: Schema.optionalKey(Schema.Array(ProviderDriverKind)),
+  sidebarUsageDisplayMode: Schema.optionalKey(SidebarUsageDisplayMode),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

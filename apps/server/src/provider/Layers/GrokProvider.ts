@@ -25,6 +25,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { fetchGrokUsage } from "../usage/grokUsage.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
@@ -298,6 +299,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     discoveredModels.length > 0
       ? grokModelsFromSettings(grokSettings.customModels, discoveredModels)
       : fallbackModels;
+  const usage = yield* Effect.promise(() => fetchGrokUsage({ updatedAt: checkedAt }));
 
   return buildServerProvider({
     presentation: GROK_PRESENTATION,
@@ -310,6 +312,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       status: "ready",
       auth: { status: "unknown" },
     },
+    usage,
   });
 });
 

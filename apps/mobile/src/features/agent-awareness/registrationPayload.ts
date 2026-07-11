@@ -2,10 +2,20 @@ import type { RelayDeviceRegistrationRequest } from "@t3tools/contracts/relay";
 
 import type { Preferences } from "../../persistence/mobile-preferences";
 
-// Development builds are Xcode-signed and receive sandbox APNs tokens;
-// preview and production builds are distribution-signed and use production
-// APNs. The relay routes each device's pushes accordingly.
-export function resolveApsEnvironment(appVariant: unknown): "sandbox" | "production" {
+// The APNs environment is determined by how the build is SIGNED, not by the
+// app variant: a development-signed build (Xcode "Run" to a device) always gets
+// a sandbox token, a distribution-signed build gets production. By default we
+// infer it from the variant (development → sandbox, else production), but an
+// explicit `override` (from EXPO_PUBLIC_APNS_ENVIRONMENT) wins — so you can run
+// the production variant (black icon, prod bundle id) while still dev-signing to
+// your own device and correctly report the sandbox environment.
+export function resolveApsEnvironment(
+  appVariant: unknown,
+  override?: unknown,
+): "sandbox" | "production" {
+  if (override === "sandbox" || override === "production") {
+    return override;
+  }
   return appVariant === "development" ? "sandbox" : "production";
 }
 

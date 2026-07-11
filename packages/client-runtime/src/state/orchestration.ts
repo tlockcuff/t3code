@@ -20,5 +20,17 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
     }),
+    contextUsage: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:context-usage",
+      tag: ORCHESTRATION_WS_METHODS.listContextUsage,
+    }),
+    tokenUsageLedger: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:token-usage-ledger",
+      tag: ORCHESTRATION_WS_METHODS.listTokenUsageLedger,
+    }),
+    machineUsageHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:machine-usage-history",
+      tag: ORCHESTRATION_WS_METHODS.getMachineUsageHistory,
+    }),
   };
 }

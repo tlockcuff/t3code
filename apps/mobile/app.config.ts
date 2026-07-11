@@ -9,6 +9,14 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 
+// Optional local overrides for contributors who are not on the T3 Tools Apple
+// team. Set in repo-root `.env.local` (gitignored), e.g.:
+//   T3CODE_APPLE_TEAM_ID=VF55RP6W24
+//   T3CODE_MOBILE_BUNDLE_ID_BASE=dev.tlok.t3code
+const APPLE_TEAM_ID = firstNonEmptyEnv(repoEnv.T3CODE_APPLE_TEAM_ID) ?? "ARK85ZXQ4Z";
+const BUNDLE_ID_BASE =
+  firstNonEmptyEnv(repoEnv.T3CODE_MOBILE_BUNDLE_ID_BASE) ?? "com.t3tools.t3code";
+
 const VARIANT_CONFIG: Record<
   AppVariant,
   {
@@ -26,8 +34,8 @@ const VARIANT_CONFIG: Record<
     scheme: "t3code-dev",
     iosIcon: "./assets/icon-composer-dev.icon",
     splashIcon: "./assets/splash-icon-dev.png",
-    iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
+    iosBundleIdentifier: `${BUNDLE_ID_BASE}.dev`,
+    androidPackage: `${BUNDLE_ID_BASE}.dev`,
     relyingParty: "clerk.t3.codes",
   },
   preview: {
@@ -35,8 +43,8 @@ const VARIANT_CONFIG: Record<
     scheme: "t3code-preview",
     iosIcon: "./assets/icon-composer-prod.icon",
     splashIcon: "./assets/splash-icon-prod.png",
-    iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
+    iosBundleIdentifier: `${BUNDLE_ID_BASE}.preview`,
+    androidPackage: `${BUNDLE_ID_BASE}.preview`,
     relyingParty: "clerk.t3.codes",
   },
   production: {
@@ -44,8 +52,8 @@ const VARIANT_CONFIG: Record<
     scheme: "t3code",
     iosIcon: "./assets/icon-composer-prod.icon",
     splashIcon: "./assets/splash-icon-prod.png",
-    iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
+    iosBundleIdentifier: BUNDLE_ID_BASE,
+    androidPackage: BUNDLE_ID_BASE,
     relyingParty: "clerk.t3.codes",
   },
 };
@@ -59,6 +67,11 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     default:
       return "production";
   }
+}
+
+function firstNonEmptyEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
@@ -99,10 +112,10 @@ const config: ExpoConfig = {
     icon: variant.iosIcon,
     supportsTablet: true,
     bundleIdentifier: variant.iosBundleIdentifier,
-    // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
-    // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
+    // Defaults to the T3 Tools team. Override with T3CODE_APPLE_TEAM_ID for
+    // local builds on another paid Apple Developer team (required for app
+    // groups, Sign in with Apple, and push notification entitlements).
+    appleTeamId: APPLE_TEAM_ID,
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
@@ -193,6 +206,7 @@ const config: ExpoConfig = {
       },
     ],
     "./plugins/withIosCocoaPodsUuidCache.cjs",
+    "./plugins/withIosCodeSignEntitlementsModification.cjs",
     // Must be listed BEFORE expo-widgets: same-type mods run last-registered-
     // first, so registering earlier makes this plugin's mods run AFTER
     // expo-widgets' — its dangerous mod wipes ios/ExpoWidgetsTarget/ (which
@@ -223,6 +237,10 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    // Optional override for the APNs environment the app reports when
+    // registering for push. Set to "sandbox" (in gitignored .env.local) to run
+    // the production variant while dev-signing to your own device via Xcode.
+    apnsEnvironment: firstNonEmptyEnv(repoEnv.EXPO_PUBLIC_APNS_ENVIRONMENT) ?? null,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },

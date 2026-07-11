@@ -11,6 +11,8 @@ import * as Semaphore from "effect/Semaphore";
 
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 import { ServerSettingsError } from "@t3tools/contracts";
+import { clearUsageCache } from "./usage/usageCache.ts";
+import { nextProviderSnapshotRefreshDelay } from "./providerSnapshotRefresh.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
@@ -130,6 +132,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
 
   const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
+    // Forced refreshes must not reuse stale plan/rate-limit meters.
+    clearUsageCache();
     const nextSettings = yield* input.getSettings;
     return yield* applySnapshot(nextSettings, { forceRefresh: true });
   });
@@ -138,11 +142,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     Effect.asVoid(applySnapshot(nextSettings)),
   ).pipe(Effect.forkScoped);
 
+  const baseRefreshInterval = Duration.fromInputUnsafe(input.refreshInterval ?? "60 seconds");
   yield* Effect.forever(
-    Effect.sleep(input.refreshInterval ?? "60 seconds").pipe(
-      Effect.flatMap(() => refreshSnapshot()),
-      Effect.ignoreCause({ log: true }),
-    ),
+    Effect.gen(function* () {
+      const snapshot = yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
+      const delay = nextProviderSnapshotRefreshDelay(snapshot, baseRefreshInterval);
+      yield* Effect.sleep(delay);
+      yield* refreshSnapshot();
+    }).pipe(Effect.ignoreCause({ log: true })),
   ).pipe(Effect.forkScoped);
 
   yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(

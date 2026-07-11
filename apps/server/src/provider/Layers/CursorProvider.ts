@@ -40,6 +40,7 @@ import {
   type CommandResult,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { fetchCursorUsage } from "../usage/cursorUsage.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
@@ -629,6 +630,7 @@ export function buildCursorProviderSnapshot(input: {
   readonly parsed: CursorAboutResult;
   readonly discoveredModels?: ReadonlyArray<ServerProviderModel>;
   readonly discoveryWarning?: string;
+  readonly usage?: ServerProviderDraft["usage"];
 }): ServerProviderDraft {
   const message = joinProviderMessages(input.parsed.message, input.discoveryWarning);
   return buildServerProvider({
@@ -649,6 +651,7 @@ export function buildCursorProviderSnapshot(input: {
       auth: input.parsed.auth,
       ...(message ? { message } : {}),
     },
+    ...(input.usage ? { usage: input.usage } : {}),
   });
 }
 
@@ -1112,6 +1115,7 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       () => [] as const,
     ),
     ...(discoveryWarning ? { discoveryWarning } : {}),
+    usage: yield* Effect.promise(() => fetchCursorUsage({ updatedAt: checkedAt })),
   });
 });
 

@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/unstable/http";
 import { AppState, Platform } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
@@ -12,6 +13,8 @@ import {
 } from "@t3tools/contracts/relay";
 import { findErrorTraceId } from "@t3tools/client-runtime/errors";
 import { ManagedRelay } from "@t3tools/client-runtime/relay";
+import type { PreparedConnection } from "@t3tools/client-runtime/connection";
+import { registerPushDeviceOverHttp } from "@t3tools/client-runtime/state/pushRegistration";
 import {
   isAtomCommandInterrupted,
   settleAsyncResult,
@@ -571,7 +574,11 @@ function logRegistrationDebug(context: string, details?: unknown): void {
 }
 
 function runRegistrationInBackground(
-  operation: Effect.Effect<unknown, unknown, ManagedRelay.ManagedRelayClient>,
+  operation: Effect.Effect<
+    unknown,
+    unknown,
+    ManagedRelay.ManagedRelayClient | HttpClient.HttpClient
+  >,
   context: string,
 ): void {
   void (async () => {
@@ -712,7 +719,10 @@ function registerDevice(
         iosMajorVersion: iosMajorVersion(),
         appVersion: Constants.expoConfig?.version,
         ...(bundleId ? { bundleId } : {}),
-        apsEnvironment: resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant),
+        apsEnvironment: resolveApsEnvironment(
+          Constants.expoConfig?.extra?.appVariant,
+          Constants.expoConfig?.extra?.apnsEnvironment,
+        ),
         ...(pushTokenRegistration.pushToken ? { pushToken: pushTokenRegistration.pushToken } : {}),
         notificationsEnabled: pushTokenRegistration.notificationsEnabled,
         preferences,
@@ -797,8 +807,89 @@ export function registerAgentAwarenessConnection(connection: SavedRemoteConnecti
   );
 }
 
+// Self-hosted push registration signatures already accepted by an environment
+// server, keyed by environmentId. Skips re-POSTing an identical payload on every
+// foreground/reconnect. Cleared per-environment when the connection drops.
+const selfHostedPushSignatures = new Map<EnvironmentId, string>();
+
+function buildDeviceRegistrationRequest(): Effect.Effect<
+  RelayDeviceRegistrationRequest | null,
+  AgentAwarenessOperationError
+> {
+  return Effect.gen(function* () {
+    if (!canRegisterRemoteLiveActivities()) {
+      return null;
+    }
+    const [deviceId, storedPreferences] = yield* Effect.all([
+      Effect.tryPromise({
+        try: () => loadOrCreateAgentAwarenessDeviceId(),
+        catch: (cause) =>
+          new AgentAwarenessOperationError({
+            operation: "load-device-registration-identifier",
+            cause,
+          }),
+      }),
+      Effect.tryPromise({
+        try: () => loadPreferences(),
+        catch: (cause) =>
+          new AgentAwarenessOperationError({
+            operation: "load-device-registration-preferences",
+            cause,
+          }),
+      }),
+    ]);
+    const pushTokenRegistration = yield* nativePushTokenRegistration();
+    const bundleId = Constants.expoConfig?.ios?.bundleIdentifier?.trim();
+    return makeRelayDeviceRegistrationRequest({
+      deviceId,
+      label: Constants.deviceName?.trim() || "iOS device",
+      iosMajorVersion: iosMajorVersion(),
+      appVersion: Constants.expoConfig?.version,
+      ...(bundleId ? { bundleId } : {}),
+      apsEnvironment: resolveApsEnvironment(
+        Constants.expoConfig?.extra?.appVariant,
+        Constants.expoConfig?.extra?.apnsEnvironment,
+      ),
+      ...(pushTokenRegistration.pushToken ? { pushToken: pushTokenRegistration.pushToken } : {}),
+      notificationsEnabled: pushTokenRegistration.notificationsEnabled,
+      preferences: storedPreferences,
+    });
+  });
+}
+
+// Registers this device's APNs token directly with a paired environment server
+// (self-hosted push), authenticated by the environment session — no Clerk/relay
+// handshake. Deduped per environment by payload signature.
+export function registerSelfHostedPushForConnection(prepared: PreparedConnection): void {
+  if (!canRegisterRemoteLiveActivities()) {
+    return;
+  }
+  ensurePushTokenListener();
+  ensureAppStateListener();
+  runRegistrationInBackground(
+    Effect.gen(function* () {
+      const payload = yield* buildDeviceRegistrationRequest();
+      if (!payload) {
+        return;
+      }
+      const signature = `${prepared.httpBaseUrl}|${registrationSignature(payload)}`;
+      if (selfHostedPushSignatures.get(prepared.environmentId) === signature) {
+        return;
+      }
+      const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
+      yield* registerPushDeviceOverHttp({ prepared, payload, signer });
+      selfHostedPushSignatures.set(prepared.environmentId, signature);
+      logRegistrationDebug("self-hosted push device registered", {
+        environmentId: prepared.environmentId,
+      });
+    }),
+    "self-hosted push device registration failed",
+  );
+}
+
 function removeAgentAwarenessConnection(environmentId: EnvironmentId): void {
   environmentConnections.delete(environmentId);
+  selfHostedPushSignatures.delete(environmentId);
 }
 
 export function unregisterAgentAwarenessConnection(environmentId: EnvironmentId): void {

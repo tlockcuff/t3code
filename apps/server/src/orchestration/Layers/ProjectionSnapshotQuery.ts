@@ -5,15 +5,21 @@ import {
   MessageId,
   NonNegativeInt,
   OrchestrationCheckpointFile,
+  OrchestrationListContextUsageResult,
+  OrchestrationListTokenUsageLedgerResult,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  PositiveInt,
   ProjectScript,
   TurnId,
   type OrchestrationCheckpointSummary,
+  type OrchestrationContextUsageThread,
   type OrchestrationLatestTurn,
+  type OrchestrationListContextUsageInput,
+  type OrchestrationListTokenUsageLedgerInput,
   type OrchestrationMessage,
   type OrchestrationProjectShell,
   type OrchestrationProposedPlan,
@@ -58,10 +64,34 @@ import {
   type ProjectionThreadCheckpointContext,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
+import { listUsageLedgerAggregates } from "../../usage/usageLedger.ts";
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodeContextUsageResult = Schema.decodeUnknownEffect(OrchestrationListContextUsageResult);
+const decodeTokenUsageLedgerResult = Schema.decodeUnknownEffect(
+  OrchestrationListTokenUsageLedgerResult,
+);
+const ContextUsagePayloadSchema = Schema.Struct({
+  usedTokens: NonNegativeInt,
+  maxTokens: Schema.optional(PositiveInt),
+  totalProcessedTokens: Schema.optional(NonNegativeInt),
+  inputTokens: Schema.optional(NonNegativeInt),
+  outputTokens: Schema.optional(NonNegativeInt),
+  cachedInputTokens: Schema.optional(NonNegativeInt),
+  compactsAutomatically: Schema.optional(Schema.Boolean),
+});
+const decodeContextUsagePayload = Schema.decodeUnknownOption(ContextUsagePayloadSchema);
+const ContextUsageRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  projectTitle: Schema.String,
+  title: Schema.String,
+  archivedAt: Schema.NullOr(IsoDateTime),
+  updatedAt: IsoDateTime,
+  payloadJson: Schema.String,
+});
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -1676,6 +1706,118 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
 
+  const listContextUsageRows = SqlSchema.findAll({
+    Request: Schema.Struct({
+      includeArchived: Schema.Boolean,
+    }),
+    Result: ContextUsageRowSchema,
+    execute: ({ includeArchived }) =>
+      sql`
+        WITH latest AS (
+          SELECT
+            a.thread_id AS "threadId",
+            a.created_at AS "updatedAt",
+            a.payload_json AS "payloadJson",
+            ROW_NUMBER() OVER (
+              PARTITION BY a.thread_id
+              ORDER BY COALESCE(a.sequence, -1) DESC, a.created_at DESC, a.activity_id DESC
+            ) AS rn
+          FROM projection_thread_activities a
+          WHERE a.kind = 'context-window.updated'
+        )
+        SELECT
+          t.thread_id AS "threadId",
+          t.project_id AS "projectId",
+          p.title AS "projectTitle",
+          t.title AS "title",
+          t.archived_at AS "archivedAt",
+          latest."updatedAt" AS "updatedAt",
+          latest."payloadJson" AS "payloadJson"
+        FROM latest
+        INNER JOIN projection_threads t
+          ON t.thread_id = latest."threadId"
+        INNER JOIN projection_projects p
+          ON p.project_id = t.project_id
+        WHERE latest.rn = 1
+          AND t.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+          AND (${includeArchived ? 1 : 0} = 1 OR t.archived_at IS NULL)
+        ORDER BY latest."updatedAt" DESC, t.thread_id DESC
+      `,
+  });
+
+  const listContextUsage: ProjectionSnapshotQueryShape["listContextUsage"] = (input = {}) =>
+    listContextUsageRows({
+      includeArchived: input.includeArchived === true,
+    }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listContextUsage:query",
+          "ProjectionSnapshotQuery.listContextUsage:decodeRows",
+        ),
+      ),
+      Effect.flatMap((rows) => {
+        const projectIdFilter = input.projectId;
+        const threads: Array<OrchestrationContextUsageThread> = [];
+        for (const row of rows) {
+          if (projectIdFilter !== undefined && row.projectId !== projectIdFilter) {
+            continue;
+          }
+          let payloadUnknown: unknown;
+          try {
+            payloadUnknown = JSON.parse(row.payloadJson);
+          } catch {
+            continue;
+          }
+          const payload = decodeContextUsagePayload(payloadUnknown);
+          if (Option.isNone(payload) || payload.value.usedTokens <= 0) {
+            continue;
+          }
+          const projectTitle = row.projectTitle.trim();
+          const title = row.title.trim();
+          if (projectTitle.length === 0 || title.length === 0) {
+            continue;
+          }
+          threads.push({
+            threadId: row.threadId,
+            projectId: row.projectId,
+            projectTitle,
+            title,
+            archivedAt: row.archivedAt,
+            updatedAt: row.updatedAt,
+            usedTokens: payload.value.usedTokens,
+            maxTokens: payload.value.maxTokens ?? null,
+            totalProcessedTokens: payload.value.totalProcessedTokens ?? null,
+            inputTokens: payload.value.inputTokens ?? null,
+            outputTokens: payload.value.outputTokens ?? null,
+            cachedInputTokens: payload.value.cachedInputTokens ?? null,
+            ...(payload.value.compactsAutomatically !== undefined
+              ? { compactsAutomatically: payload.value.compactsAutomatically }
+              : {}),
+          });
+        }
+        return decodeContextUsageResult({ threads }).pipe(
+          Effect.mapError(
+            toPersistenceDecodeError("ProjectionSnapshotQuery.listContextUsage:decodeResult"),
+          ),
+        );
+      }),
+    );
+
+  const listTokenUsageLedger: ProjectionSnapshotQueryShape["listTokenUsageLedger"] = (
+    input: OrchestrationListTokenUsageLedgerInput = {},
+  ) =>
+    listUsageLedgerAggregates(input).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.flatMap((result) =>
+        decodeTokenUsageLedgerResult(result).pipe(
+          Effect.mapError(
+            toPersistenceDecodeError("ProjectionSnapshotQuery.listTokenUsageLedger:decodeResult"),
+          ),
+        ),
+      ),
+    );
+
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
       Effect.mapError(
@@ -2068,6 +2210,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
+    listContextUsage,
+    listTokenUsageLedger,
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,

@@ -30,6 +30,7 @@ import * as Tracer from "effect/Tracer";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PushNotifier from "../push/PushNotifier.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -500,6 +501,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           }),
           Layer.succeed(OrchestrationEngineService, orchestrationEngine),
           Layer.succeed(ProjectionSnapshotQuery, snapshotQuery),
+          PushNotifier.layerDisabled,
         );
 
         yield* Effect.gen(function* () {
@@ -662,6 +664,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
             getProjectShellById: () => Effect.succeed(Option.some(project)),
           } as unknown as ProjectionSnapshotQueryShape),
+          PushNotifier.layerDisabled,
         );
 
         yield* Effect.gen(function* () {

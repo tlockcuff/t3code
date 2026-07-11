@@ -9,6 +9,10 @@
 import type {
   CheckpointRef,
   OrchestrationCheckpointSummary,
+  OrchestrationListContextUsageInput,
+  OrchestrationListContextUsageResult,
+  OrchestrationListTokenUsageLedgerInput,
+  OrchestrationListTokenUsageLedgerResult,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -93,6 +97,26 @@ export interface ProjectionSnapshotQueryShape {
     OrchestrationShellSnapshot,
     ProjectionRepositoryError
   >;
+
+  /**
+   * Read the latest context-window snapshot per thread for the usage page.
+   *
+   * Returns only the newest `context-window.updated` activity payload for each
+   * thread — never full activity histories.
+   */
+  readonly listContextUsage: (
+    input?: OrchestrationListContextUsageInput,
+  ) => Effect.Effect<OrchestrationListContextUsageResult, ProjectionRepositoryError>;
+
+  /**
+   * Aggregate T3-only token usage ledger rows (today / history windows).
+   *
+   * Backfills from projected context-window activities on first read when the
+   * ledger is empty. Separate from machine-wide Claude/Codex local history.
+   */
+  readonly listTokenUsageLedger: (
+    input?: OrchestrationListTokenUsageLedgerInput,
+  ) => Effect.Effect<OrchestrationListTokenUsageLedgerResult, ProjectionRepositoryError>;
 
   /**
    * Read the latest projection snapshot sequence without hydrating read-model

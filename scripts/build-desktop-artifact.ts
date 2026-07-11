@@ -1363,6 +1363,39 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+/**
+ * electron-builder `dir` output nests the `.app` under `mac/`, `mac-arm64/`, or
+ * `mac-x64/`. Walk one level to collect those bundles for local install copy-out.
+ */
+export function resolveMacAppBundlePaths(
+  joinPath: (...parts: string[]) => string,
+  stageDistDir: string,
+  topLevelEntries: ReadonlyArray<string>,
+  nestedEntriesByDir: ReadonlyMap<string, ReadonlyArray<string>>,
+): ReadonlyArray<string> {
+  const bundles: string[] = [];
+
+  for (const entry of topLevelEntries) {
+    if (entry.endsWith(".app")) {
+      bundles.push(joinPath(stageDistDir, entry));
+      continue;
+    }
+
+    if (!entry.startsWith("mac")) {
+      continue;
+    }
+
+    const nested = nestedEntriesByDir.get(entry) ?? [];
+    for (const child of nested) {
+      if (child.endsWith(".app")) {
+        bundles.push(joinPath(stageDistDir, entry, child));
+      }
+    }
+  }
+
+  return bundles;
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -1900,6 +1933,33 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     copiedArtifacts.push(to);
   }
 
+  // `dir` packs leave the `.app` under mac*/ — copy those out for local install.
+  if (options.platform === "mac" && options.target === "dir") {
+    const nestedEntriesByDir = new Map<string, ReadonlyArray<string>>();
+    for (const entry of stageEntries) {
+      if (!entry.startsWith("mac") || entry.endsWith(".app")) continue;
+      const dirPath = path.join(stageDistDir, entry);
+      const stat = yield* fs.stat(dirPath).pipe(Effect.orElseSucceed(() => null));
+      if (!stat || stat.type !== "Directory") continue;
+      nestedEntriesByDir.set(entry, yield* fs.readDirectory(dirPath));
+    }
+
+    const appBundles = resolveMacAppBundlePaths(
+      (...parts) => path.join(...parts),
+      stageDistDir,
+      stageEntries,
+      nestedEntriesByDir,
+    );
+    for (const from of appBundles) {
+      const to = path.join(options.outputDir, path.basename(from));
+      if (yield* fs.exists(to)) {
+        yield* fs.remove(to, { recursive: true });
+      }
+      yield* fs.copy(from, to);
+      copiedArtifacts.push(to);
+    }
+  }
+
   if (copiedArtifacts.length === 0) {
     return yield* new DesktopBuildNoArtifactsProducedError({
       distPath: stageDistDir,
@@ -1911,6 +1971,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),
   );
+
+  return copiedArtifacts;
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {

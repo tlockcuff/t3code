@@ -98,3 +98,7 @@ export const primaryServerObservabilityAtom = Atom.make(
   (get): ServerConfig["observability"] | null =>
     get(primaryServerConfigAtom)?.observability ?? null,
 ).pipe(Atom.withLabel("web-primary-server-observability"));
+
+export const primaryServerUpstreamSyncAtom = Atom.make(
+  (get): ServerConfig["upstreamSync"] | null => get(primaryServerConfigAtom)?.upstreamSync ?? null,
+).pipe(Atom.withLabel("web-primary-server-upstream-sync"));

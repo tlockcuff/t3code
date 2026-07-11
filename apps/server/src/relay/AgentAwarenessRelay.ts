@@ -44,6 +44,7 @@ import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environme
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as PushNotifier from "../push/PushNotifier.ts";
 
 export class AgentAwarenessRelay extends Context.Service<
   AgentAwarenessRelay,
@@ -288,6 +289,7 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const snapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const pushNotifier = yield* PushNotifier.PushNotifier;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
@@ -338,20 +340,20 @@ export const make = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
-        threadId,
-      });
+    const relayConfig = publishAgentActivity
+      ? yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null))
+      : null;
+    // The self-hosted direct-push path fires whenever APNs is configured,
+    // independent of the managed relay. If neither the relay nor direct-push is
+    // active there is nothing to do, so skip the projection work entirely.
+    if (!relayConfig && !pushNotifier.enabled) {
+      yield* Effect.logDebug(
+        "agent activity publish skipped; neither relay nor direct push configured",
+        { threadId },
+      );
       return;
     }
-    const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
-        threadId,
-      });
-      return;
-    }
-    const relayClient = yield* makeRelayClient(relayConfig);
+    const relayClient = relayConfig ? yield* makeRelayClient(relayConfig) : null;
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
     const publishState = (input: {
@@ -360,6 +362,18 @@ export const make = Effect.gen(function* () {
       readonly reason: string;
     }) =>
       Effect.gen(function* () {
+        // Direct-push delivery (self-hosted APNs). Runs after all the dedup and
+        // confirm-deferral gating above, so it inherits the same spurious-
+        // notification protections as the relay path. Tombstones (null state)
+        // carry no alert, so only non-null states notify.
+        if (pushNotifier.enabled && input.state !== null) {
+          yield* pushNotifier.notify(input.state);
+        }
+
+        if (!relayConfig || !relayClient) {
+          return;
+        }
+
         const proof = yield* makePublishProof({
           privateKey: cloudLinkKeyPair.privateKey,
           relayIssuer: relayConfig.issuer,
@@ -508,13 +522,15 @@ export const make = Effect.gen(function* () {
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
-    if (!publishAgentActivity) {
-      yield* Effect.logDebug("agent activity snapshot skipped; publication disabled");
-      return false;
-    }
-    const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
+    const relayConfig = publishAgentActivity
+      ? yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null))
+      : null;
+    // Replay the active-thread snapshot when either delivery path is live, so a
+    // server restart re-notifies threads that are already waiting/failed.
+    if (!relayConfig && !pushNotifier.enabled) {
+      yield* Effect.logDebug(
+        "agent activity snapshot skipped; neither relay nor direct push configured",
+      );
       return false;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
@@ -578,6 +594,9 @@ export const make = Effect.gen(function* () {
         relayConfigured: relayConfig !== null,
         publishEnabled,
       });
+      if (pushNotifier.enabled) {
+        yield* Effect.logInfo("self-hosted push notifications enabled (direct APNs)");
+      }
       switch (startupState) {
         case "waiting-for-link":
           yield* Effect.logInfo(

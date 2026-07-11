@@ -153,6 +153,35 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Subscription / plan rate-limit usage for a provider instance.
+ *
+ * Windows are provider-specific (Claude 5h/7d, Codex primary/secondary,
+ * Grok weekly credits, Cursor monthly pools). `usedPercent` is 0–100 of
+ * the window already consumed; remaining is `100 - usedPercent`.
+ */
+export const ServerProviderUsageStatus = Schema.Literals(["ok", "unavailable", "error"]);
+export type ServerProviderUsageStatus = typeof ServerProviderUsageStatus.Type;
+
+export const ServerProviderUsageWindow = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  usedPercent: Schema.Number,
+  windowMinutes: Schema.optional(Schema.NullOr(Schema.Number)),
+  resetsAt: Schema.optional(Schema.NullOr(Schema.Number)),
+});
+export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+export const ServerProviderUsage = Schema.Struct({
+  status: ServerProviderUsageStatus,
+  planLabel: Schema.optional(TrimmedNonEmptyString),
+  windows: Schema.Array(ServerProviderUsageWindow),
+  updatedAt: IsoDateTime,
+  error: Schema.optional(TrimmedNonEmptyString),
+  source: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderUsage = typeof ServerProviderUsage.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -189,6 +218,9 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  // Optional subscription/plan usage snapshot. Absent on older caches and
+  // providers that do not expose rate-limit windows.
+  usage: Schema.optionalKey(ServerProviderUsage),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 
@@ -406,6 +438,43 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
+/**
+ * Whether the running T3 Code install checkout is in sync with its configured
+ * git `upstream` remote (fork-maintainer signal — not desktop/app releases).
+ *
+ *  - `unavailable` — no install git root, or no `upstream` remote
+ *  - `unknown` — check failed / not yet completed
+ *  - `current` — even with upstream
+ *  - `behind` — upstream has commits to pull/merge
+ *  - `ahead` — local-only commits (no upstream commits missing)
+ *  - `diverged` — both ahead and behind
+ */
+export const ServerUpstreamSyncStatus = Schema.Literals([
+  "unavailable",
+  "unknown",
+  "current",
+  "behind",
+  "ahead",
+  "diverged",
+]);
+export type ServerUpstreamSyncStatus = typeof ServerUpstreamSyncStatus.Type;
+
+export const ServerUpstreamSyncState = Schema.Struct({
+  status: ServerUpstreamSyncStatus,
+  checkedAt: Schema.NullOr(IsoDateTime),
+  behindBy: NonNegativeInt,
+  aheadBy: NonNegativeInt,
+  installRoot: Schema.NullOr(TrimmedNonEmptyString),
+  upstreamRemote: Schema.NullOr(TrimmedNonEmptyString),
+  upstreamUrl: Schema.NullOr(TrimmedNonEmptyString),
+  upstreamRef: Schema.NullOr(TrimmedNonEmptyString),
+  localSha: Schema.NullOr(TrimmedNonEmptyString),
+  upstreamSha: Schema.NullOr(TrimmedNonEmptyString),
+  suggestedCommand: Schema.NullOr(TrimmedNonEmptyString),
+  message: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ServerUpstreamSyncState = typeof ServerUpstreamSyncState.Type;
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -417,6 +486,8 @@ export const ServerConfig = Schema.Struct({
   availableEditors: Schema.Array(EditorId),
   observability: ServerObservability,
   settings: ServerSettings,
+  // Optional for back-compat with cached configs / older servers.
+  upstreamSync: Schema.optionalKey(ServerUpstreamSyncState),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -470,6 +541,12 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
 
+export const ServerConfigUpstreamSyncUpdatedPayload = Schema.Struct({
+  upstreamSync: ServerUpstreamSyncState,
+});
+export type ServerConfigUpstreamSyncUpdatedPayload =
+  typeof ServerConfigUpstreamSyncUpdatedPayload.Type;
+
 export const ServerConfigStreamSnapshotEvent = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("snapshot"),
@@ -501,11 +578,20 @@ export const ServerConfigStreamSettingsUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamSettingsUpdatedEvent =
   typeof ServerConfigStreamSettingsUpdatedEvent.Type;
 
+export const ServerConfigStreamUpstreamSyncUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("upstreamSyncUpdated"),
+  payload: ServerConfigUpstreamSyncUpdatedPayload,
+});
+export type ServerConfigStreamUpstreamSyncUpdatedEvent =
+  typeof ServerConfigStreamUpstreamSyncUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
   ServerConfigStreamProviderStatusesEvent,
   ServerConfigStreamSettingsUpdatedEvent,
+  ServerConfigStreamUpstreamSyncUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

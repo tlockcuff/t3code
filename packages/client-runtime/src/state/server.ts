@@ -72,6 +72,15 @@ export function applyServerConfigProjection(
         latestEvent: event,
         source: "live",
       }));
+    case "upstreamSyncUpdated":
+      return Option.map(current, (projection) => ({
+        config: {
+          ...projection.config,
+          upstreamSync: event.payload.upstreamSync,
+        },
+        latestEvent: event,
+        source: "live",
+      }));
   }
 }
 

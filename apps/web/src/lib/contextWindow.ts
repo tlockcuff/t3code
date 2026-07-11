@@ -108,5 +108,26 @@ export function formatContextWindowTokens(value: number | null): string {
   if (value < 1_000_000) {
     return `${Math.round(value / 1_000)}k`;
   }
-  return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
+  if (value < 10_000_000) {
+    return `${(value / 1_000_000)
+      .toFixed(1)
+      .replace(/\.00$/, "")
+      .replace(/(\.\d)0$/, "$1")}m`;
+  }
+  if (value < 1_000_000_000) {
+    return `${(value / 1_000_000)
+      .toFixed(1)
+      .replace(/\.00$/, "")
+      .replace(/(\.\d)0$/, "$1")}m`;
+  }
+  if (value < 10_000_000_000) {
+    return `${(value / 1_000_000_000)
+      .toFixed(1)
+      .replace(/\.00$/, "")
+      .replace(/(\.\d)0$/, "$1")}b`;
+  }
+  return `${(value / 1_000_000_000)
+    .toFixed(1)
+    .replace(/\.00$/, "")
+    .replace(/(\.\d)0$/, "$1")}b`;
 }

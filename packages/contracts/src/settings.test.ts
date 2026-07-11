@@ -19,6 +19,34 @@ describe("ClientSettings word wrap", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);
   });
 
+  it("defaults sidebar usage drivers to all supported providers", () => {
+    expect(decodeClientSettings({}).sidebarUsageDrivers).toEqual([
+      "claudeAgent",
+      "codex",
+      "cursor",
+      "grok",
+    ]);
+  });
+
+  it("decodes a custom sidebar usage driver allowlist", () => {
+    const decoded = decodeClientSettings({
+      sidebarUsageDrivers: ["claudeAgent", "codex"],
+    });
+    expect(decoded.sidebarUsageDrivers).toEqual(["claudeAgent", "codex"]);
+  });
+
+  it("defaults sidebar usage display mode to used", () => {
+    expect(decodeClientSettings({}).sidebarUsageDisplayMode).toBe("used");
+  });
+
+  it("decodes a custom sidebar usage display mode", () => {
+    expect(
+      decodeClientSettings({
+        sidebarUsageDisplayMode: "remaining",
+      }).sidebarUsageDisplayMode,
+    ).toBe("remaining");
+  });
+
   it("ignores obsolete wrapping preferences", () => {
     const decoded = decodeClientSettings({
       chatWordWrap: false,

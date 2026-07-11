@@ -112,6 +112,8 @@ import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as UpstreamSyncMonitor from "./install/UpstreamSyncMonitor.ts";
+import { createUnavailableUpstreamSyncState } from "./install/upstreamSyncLogic.ts";
 import * as Data from "effect/Data";
 
 const defaultProjectId = ProjectId.make("project-default");
@@ -585,20 +587,35 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
+        Layer.mergeAll(
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+          Layer.mock(UpstreamSyncMonitor.UpstreamSyncMonitor)({
+            getState: Effect.succeed(
+              createUnavailableUpstreamSyncState({
+                checkedAt: DateTime.formatIso(TEST_EPOCH),
+              }),
+            ),
+            refresh: Effect.succeed(
+              createUnavailableUpstreamSyncState({
+                checkedAt: DateTime.formatIso(TEST_EPOCH),
+              }),
+            ),
+            streamChanges: Stream.empty,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(TraceDiagnostics.TraceDiagnostics)({
@@ -697,6 +714,20 @@ const buildAppUnderTest = (options?: {
               projects: [],
               threads: [],
               updatedAt: "1970-01-01T00:00:00.000Z",
+            }),
+          listContextUsage: () => Effect.succeed({ threads: [] }),
+          listTokenUsageLedger: () =>
+            Effect.succeed({
+              rows: [],
+              totals: {
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 0,
+                estimatedCostUsd: 0,
+              },
+              pricingVersion: "test",
             }),
           getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
           getProjectShellById: () => Effect.succeed(Option.none()),

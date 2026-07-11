@@ -53,6 +53,7 @@ import { ensureLocalApi, readLocalApi } from "../../localApi";
 import {
   primaryServerObservabilityAtom,
   primaryServerProvidersAtom,
+  primaryServerUpstreamSyncAtom,
   serverEnvironment,
 } from "../../state/server";
 import { usePrimaryEnvironment } from "../../state/environments";
@@ -76,9 +77,17 @@ import {
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
+  normalizeSidebarUsageDrivers,
+  USAGE_SIDEBAR_DRIVERS,
+} from "../sidebar/SidebarUsageStatus.logic";
+import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,
 } from "./SettingsPanels.logic";
+import {
+  formatUpstreamSyncSettingsDescription,
+  shouldShowUpstreamSyncBadge,
+} from "../sidebar/SidebarUpstreamSync.logic";
 import {
   SettingResetButton,
   SettingsPageContainer,
@@ -421,6 +430,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(!Equal.equals(
+        settings.sidebarUsageDrivers,
+        DEFAULT_UNIFIED_SETTINGS.sidebarUsageDrivers,
+      ) || settings.sidebarUsageDisplayMode !== DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode
+        ? ["Sidebar usage"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ],
     [
@@ -435,6 +450,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
+      settings.sidebarUsageDrivers,
+      settings.sidebarUsageDisplayMode,
       settings.timestampFormat,
       settings.wordWrap,
       theme,
@@ -465,6 +482,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      sidebarUsageDrivers: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDrivers,
+      sidebarUsageDisplayMode: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
@@ -482,6 +501,7 @@ export function GeneralSettingsPanel() {
   const updateSettings = useUpdatePrimarySettings();
   const observability = useAtomValue(primaryServerObservabilityAtom);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const upstreamSync = useAtomValue(primaryServerUpstreamSyncAtom);
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -489,6 +509,8 @@ export function GeneralSettingsPanel() {
     otlpMetricsEnabled: observability?.otlpMetricsEnabled ?? false,
     otlpMetricsUrl: observability?.otlpMetricsUrl,
   });
+  const upstreamSyncDescription = formatUpstreamSyncSettingsDescription(upstreamSync);
+  const showUpstreamSyncAction = shouldShowUpstreamSyncBadge(upstreamSync);
 
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
@@ -952,6 +974,81 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection
+        title="Sidebar usage"
+        headerAction={
+          !Equal.equals(
+            settings.sidebarUsageDrivers,
+            DEFAULT_UNIFIED_SETTINGS.sidebarUsageDrivers,
+          ) ||
+          settings.sidebarUsageDisplayMode !== DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode ? (
+            <SettingResetButton
+              label="sidebar usage"
+              onClick={() =>
+                updateSettings({
+                  sidebarUsageDrivers: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDrivers,
+                  sidebarUsageDisplayMode: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode,
+                })
+              }
+            />
+          ) : null
+        }
+      >
+        <SettingsRow
+          title="Display"
+          description="Show percent used or percent remaining in the sidebar meters."
+          control={
+            <Select
+              value={settings.sidebarUsageDisplayMode}
+              onValueChange={(value) => {
+                if (value === "used" || value === "remaining") {
+                  updateSettings({ sidebarUsageDisplayMode: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Sidebar usage display mode">
+                <SelectValue>
+                  {settings.sidebarUsageDisplayMode === "remaining" ? "Remaining" : "Used"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="used">
+                  Used
+                </SelectItem>
+                <SelectItem hideIndicator value="remaining">
+                  Remaining
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+        {USAGE_SIDEBAR_DRIVERS.map((driver) => {
+          const label = PROVIDER_DISPLAY_NAMES[driver] ?? getDriverOption(driver)?.label ?? driver;
+          const enabled = settings.sidebarUsageDrivers.includes(driver);
+          return (
+            <SettingsRow
+              key={driver}
+              title={label}
+              description={`Show ${label} usage in the sidebar.`}
+              control={
+                <Switch
+                  checked={enabled}
+                  onCheckedChange={(checked) => {
+                    const next = new Set(settings.sidebarUsageDrivers);
+                    if (checked) next.add(driver);
+                    else next.delete(driver);
+                    updateSettings({
+                      sidebarUsageDrivers: normalizeSidebarUsageDrivers([...next]),
+                    });
+                  }}
+                  aria-label={`Show ${label} usage in sidebar`}
+                />
+              }
+            />
+          );
+        })}
+      </SettingsSection>
+
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
@@ -961,6 +1058,46 @@ export function GeneralSettingsPanel() {
             description="Current version of the application."
           />
         )}
+        {upstreamSync && upstreamSync.status !== "unavailable" ? (
+          <SettingsRow
+            title="Upstream sync"
+            description={upstreamSyncDescription}
+            control={
+              showUpstreamSyncAction && upstreamSync.suggestedCommand ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    const command = upstreamSync.suggestedCommand;
+                    if (!command || typeof navigator === "undefined" || !navigator.clipboard) {
+                      return;
+                    }
+                    void navigator.clipboard.writeText(command).then(
+                      () => {
+                        toastManager.add({
+                          type: "success",
+                          title: "Merge command copied",
+                          description: command,
+                        });
+                      },
+                      () => {
+                        toastManager.add(
+                          stackedThreadToast({
+                            type: "error",
+                            title: "Could not copy merge command",
+                            description: command,
+                          }),
+                        );
+                      },
+                    );
+                  }}
+                >
+                  Copy merge command
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : null}
         <SettingsRow
           title="Diagnostics"
           description={diagnosticsDescription}

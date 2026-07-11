@@ -31,6 +31,7 @@ import {
   buildServerProvider,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { mapCodexRateLimitsToUsage } from "../usage/codexUsage.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
@@ -47,6 +48,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse | null;
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -354,15 +356,17 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       version,
       models: appendCustomCodexModels([], input.customModels ?? []),
       skills: [],
+      rateLimits: null,
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      client.request("account/rateLimits/read", undefined).pipe(Effect.orElseSucceed(() => null)),
     ],
     { concurrency: "unbounded" },
   );
@@ -372,6 +376,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+    rateLimits,
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -552,6 +557,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
+  const usage = mapCodexRateLimitsToUsage(snapshot.rateLimits, checkedAt);
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -566,6 +572,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       auth: accountStatus.auth,
       ...(accountStatus.message ? { message: accountStatus.message } : {}),
     },
+    usage,
   });
 });
 

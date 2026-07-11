@@ -37,6 +37,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { fetchClaudeUsage } from "../usage/claudeUsage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -796,6 +797,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     subscriptionType: capabilities.subscriptionType,
     authMethod: capabilities.tokenSource,
   });
+  const usage = yield* Effect.promise(() =>
+    fetchClaudeUsage({
+      updatedAt: checkedAt,
+      ...(authMetadata?.label ? { planLabel: authMetadata.label } : {}),
+    }),
+  );
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
@@ -813,6 +820,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
     },
+    usage,
   });
 });
 

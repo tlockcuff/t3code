@@ -15,6 +15,7 @@
 - `bun run dist:desktop:dmg:x64` — Builds an Intel macOS `.dmg`.
 - `bun run dist:desktop:linux` — Builds a Linux AppImage into `./release`.
 - `bun run dist:desktop:win` — Builds a Windows NSIS installer into `./release`.
+- `bun run install:desktop` — Builds the macOS app (`dir` target), quits any running copy, replaces `/Applications/T3 Code (Alpha).app`, and opens it. Flags: `--skip-build`, `--no-open`, `--verbose`.
 
 ## Desktop `.dmg` packaging notes
 
