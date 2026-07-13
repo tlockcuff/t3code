@@ -4,7 +4,7 @@ import Constants from "expo-constants";
 import * as Updates from "expo-updates";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert, Linking, Platform, ScrollView, View } from "react-native";
@@ -17,7 +17,9 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
+import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import {
   getAgentAwarenessRegistrationStatus,
@@ -58,23 +60,31 @@ export function SettingsRouteScreen() {
   return (
     <>
       <WorkspaceSidebarToolbar />
-      <NativeStackScreenOptions
-        options={{
-          unstable_headerRightItems:
-            Platform.OS === "ios"
-              ? () => [
-                  withNativeGlassHeaderItem({
-                    accessibilityLabel: "Close settings",
-                    icon: { name: "xmark", type: "sfSymbol" } as const,
-                    identifier: "settings-close",
-                    label: "",
-                    onPress: () => navigation.goBack(),
-                    type: "button",
-                  }),
-                ]
-              : undefined,
-        }}
-      />
+      {Platform.OS === "android" ? (
+        <>
+          {/* Android renders its own in-screen header instead of the native bar. */}
+          <NativeStackScreenOptions options={{ headerShown: false }} />
+          <AndroidScreenHeader title="Settings" onBack={() => navigation.goBack()} />
+        </>
+      ) : (
+        <NativeStackScreenOptions
+          options={{
+            unstable_headerRightItems:
+              Platform.OS === "ios"
+                ? () => [
+                    withNativeGlassHeaderItem({
+                      accessibilityLabel: "Close settings",
+                      icon: { name: "xmark", type: "sfSymbol" } as const,
+                      identifier: "settings-close",
+                      label: "",
+                      onPress: () => navigation.goBack(),
+                      type: "button",
+                    }),
+                  ]
+                : undefined,
+          }}
+        />
+      )}
       {hasCloudPublicConfig() ? <ConfiguredSettingsRouteScreen /> : <LocalSettingsRouteScreen />}
     </>
   );
@@ -125,6 +135,7 @@ function LocalSettingsRouteScreen() {
 function ConfiguredSettingsRouteScreen() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const agentAwarenessPushAvailable = supportsAgentAwarenessPush();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { expand: expandClerkSheet } = useClerkSettingsSheetDetent();
@@ -362,13 +373,17 @@ function ConfiguredSettingsRouteScreen() {
           <DeviceNotificationsRow />
           <SettingsSwitchRow
             disabled={
-              !isLoaded || liveActivityStatus === "checking" || liveActivityStatus === "linking"
+              !agentAwarenessPushAvailable ||
+              !isLoaded ||
+              liveActivityStatus === "checking" ||
+              liveActivityStatus === "linking"
             }
             icon="bolt.circle"
             label="Live Activity Updates"
             // Same gate: a saved preference is meaningless until the device
             // registration the relay needs to push updates has succeeded.
             value={
+              agentAwarenessPushAvailable &&
               (liveActivityStatus === "enabled" || liveActivityStatus === "linking") &&
               deviceRegistered
             }

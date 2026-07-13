@@ -10,6 +10,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { supportsAgentAwarenessPush } from "../agent-awareness/capabilities";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
   getAgentAwarenessRegistrationStatus,
@@ -140,12 +141,17 @@ export function useDeviceNotificationsToggle() {
 // The Device Notifications switch row. Reusable across settings screens.
 export function DeviceNotificationsRow() {
   const { notificationStatus, deviceRegistered, onValueChange } = useDeviceNotificationsToggle();
+  // Personal-team builds have no push entitlement, so nothing can be delivered
+  // regardless of the local permission or registration state.
+  const pushAvailable = supportsAgentAwarenessPush();
   return (
     <SettingsSwitchRow
       icon="bell.badge"
       label="Device Notifications"
-      disabled={notificationStatus === "checking" || notificationStatus === "unsupported"}
-      value={notificationStatus === "enabled" && deviceRegistered}
+      disabled={
+        !pushAvailable || notificationStatus === "checking" || notificationStatus === "unsupported"
+      }
+      value={pushAvailable && notificationStatus === "enabled" && deviceRegistered}
       onValueChange={onValueChange}
     />
   );
