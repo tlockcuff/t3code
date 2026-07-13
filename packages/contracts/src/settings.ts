@@ -54,8 +54,41 @@ export const SidebarUsageDisplayMode = Schema.Literals(["used", "remaining"]);
 export type SidebarUsageDisplayMode = typeof SidebarUsageDisplayMode.Type;
 export const DEFAULT_SIDEBAR_USAGE_DISPLAY_MODE: SidebarUsageDisplayMode = "used";
 
+// Attention signals fired when an agent needs the user back. Both channels
+// share one set of triggers so a completion never dings without also
+// notifying (or vice versa) — the triggers describe *when* attention is
+// warranted; the channels describe *how* it is delivered.
+export const NotificationSound = Schema.Literals(["chime", "ping", "knock"]);
+export type NotificationSound = typeof NotificationSound.Type;
+export const DEFAULT_NOTIFICATION_SOUND: NotificationSound = "chime";
+
+export const MIN_NOTIFICATION_VOLUME = 0;
+export const MAX_NOTIFICATION_VOLUME = 1;
+export const NotificationVolume = Schema.Number.check(
+  Schema.isBetween({ minimum: MIN_NOTIFICATION_VOLUME, maximum: MAX_NOTIFICATION_VOLUME }),
+);
+export type NotificationVolume = typeof NotificationVolume.Type;
+export const DEFAULT_NOTIFICATION_VOLUME: NotificationVolume = 0.5;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // ── Agent attention signals ──
+  /** Play a sound when a thread reaches a notify-worthy phase. */
+  notificationSoundEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  notificationSound: NotificationSound.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_NOTIFICATION_SOUND)),
+  ),
+  notificationVolume: NotificationVolume.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_NOTIFICATION_VOLUME)),
+  ),
+  /** Post an OS desktop notification when a thread reaches a notify-worthy phase. */
+  desktopNotificationsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  notifyOnCompletion: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  notifyOnApproval: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  notifyOnInput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  notifyOnFailure: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(

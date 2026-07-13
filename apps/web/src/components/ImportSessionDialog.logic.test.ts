@@ -1,13 +1,83 @@
-import type { ImportableSession } from "@t3tools/contracts";
+import type { ImportableSession, ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  driverKindForSessionProvider,
   formatSessionSubtitle,
   formatWorkspaceLabel,
   groupImportableSessions,
   listSessionProviders,
   listSessionWorkspaces,
+  resolveImportModelSelection,
 } from "./ImportSessionDialog.logic.ts";
+
+const provider = (input: {
+  readonly instanceId: string;
+  readonly driver: string;
+  readonly models: ReadonlyArray<string>;
+  readonly enabled?: boolean;
+}): ServerProvider =>
+  ({
+    instanceId: input.instanceId,
+    driver: input.driver,
+    enabled: input.enabled ?? true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: {},
+    checkedAt: "2026-07-01T00:00:00.000Z",
+    availability: "available",
+    models: input.models.map((slug) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  }) as unknown as ServerProvider;
+
+const CLAUDE_INSTANCE = provider({
+  instanceId: "claudeAgent",
+  driver: "claudeAgent",
+  models: ["claude-opus-4-8"],
+});
+const CODEX_INSTANCE = provider({
+  instanceId: "codex",
+  driver: "codex",
+  models: ["gpt-5.4"],
+});
+
+describe("resolveImportModelSelection", () => {
+  it("maps a session to its own provider rather than the project default", () => {
+    // Importing a Claude session into a Codex-default project used to lock the thread to Codex.
+    expect(resolveImportModelSelection([CODEX_INSTANCE, CLAUDE_INSTANCE], "claude")).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-opus-4-8",
+    });
+    expect(resolveImportModelSelection([CODEX_INSTANCE, CLAUDE_INSTANCE], "codex")).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4",
+    });
+  });
+
+  it("returns null when the session's provider is not enabled, so the picker can disable the row", () => {
+    expect(resolveImportModelSelection([CODEX_INSTANCE], "claude")).toBeNull();
+    expect(
+      resolveImportModelSelection(
+        [provider({ instanceId: "codex", driver: "codex", models: ["gpt-5.4"], enabled: false })],
+        "codex",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("driverKindForSessionProvider", () => {
+  it("maps claude sessions to the claudeAgent driver slug", () => {
+    expect(driverKindForSessionProvider("claude")).toBe("claudeAgent");
+    expect(driverKindForSessionProvider("codex")).toBe("codex");
+  });
+});
 
 const session = (
   overrides: Partial<ImportableSession> & Pick<ImportableSession, "provider" | "sessionId">,

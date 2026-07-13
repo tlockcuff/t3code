@@ -3,8 +3,8 @@
 import type {
   EnvironmentId,
   ImportableSession,
-  ModelSelection,
   ProjectId,
+  ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { ChevronDownIcon, LoaderIcon, SearchIcon } from "lucide-react";
@@ -22,6 +22,7 @@ import {
   listSessionProviders,
   listSessionWorkspaces,
   PROVIDER_LABELS,
+  resolveImportModelSelection,
 } from "./ImportSessionDialog.logic";
 import {
   Combobox,
@@ -48,7 +49,8 @@ export interface ImportSessionDialogProps {
   readonly projectName: string;
   /** Sessions run in this directory sort first. */
   readonly projectRoot: string | null;
-  readonly modelSelection: ModelSelection;
+  /** Configured provider instances, used to run the imported thread on its own provider. */
+  readonly providers: ReadonlyArray<ServerProvider>;
   readonly onImported: (environmentId: EnvironmentId, threadId: ThreadId) => void;
 }
 
@@ -135,7 +137,7 @@ export function ImportSessionDialog({
   projectId,
   projectName,
   projectRoot,
-  modelSelection,
+  providers,
   onImported,
 }: ImportSessionDialogProps): React.JSX.Element {
   const [query, setQuery] = useState("");
@@ -209,6 +211,18 @@ export function ImportSessionDialog({
 
   const handleImport = useCallback(
     (session: ImportableSession) => {
+      // An imported session can only be resumed by the provider that wrote it, so the thread runs
+      // on that provider's instance rather than whatever the project defaults to.
+      const modelSelection = resolveImportModelSelection(providers, session.provider);
+      if (modelSelection === null) {
+        toastManager.add({
+          type: "error",
+          title: "Could not import session",
+          description: `${PROVIDER_LABELS[session.provider]} is not enabled, so this session cannot be resumed.`,
+        });
+        return;
+      }
+
       void (async () => {
         setImportingSessionId(session.sessionId);
         const threadId = newThreadId();
@@ -242,8 +256,18 @@ export function ImportSessionDialog({
         onImported(environmentId, threadId);
       })();
     },
-    [environmentId, importSession, modelSelection, onImported, onOpenChange, projectId],
+    [environmentId, importSession, onImported, onOpenChange, projectId, providers],
   );
+
+  // A session whose provider has no enabled instance can be listed but never resumed, so the row is
+  // disabled with the reason shown rather than failing only once the user clicks it.
+  const unavailableProviders = useMemo(() => {
+    const unavailable = new Set<ImportableSession["provider"]>();
+    for (const candidate of listSessionProviders(sessions)) {
+      if (resolveImportModelSelection(providers, candidate) === null) unavailable.add(candidate);
+    }
+    return unavailable;
+  }, [providers, sessions]);
 
   const isEmpty = !sessionsQuery.isPending && groups.length === 0;
 
@@ -337,6 +361,11 @@ export function ImportSessionDialog({
               <section key={group.provider} className="mb-4 last:mb-0">
                 <h3 className="pb-1.5 font-medium text-muted-foreground text-xs">
                   {PROVIDER_LABELS[group.provider]} ({group.sessionCount})
+                  {unavailableProviders.has(group.provider) ? (
+                    <span className="ps-1.5 font-normal text-muted-foreground/70">
+                      — not enabled, cannot be resumed
+                    </span>
+                  ) : null}
                 </h3>
                 {group.workspaces.map((workspace) => (
                   <div key={workspace.cwd} className="mb-3 last:mb-0">
@@ -351,9 +380,12 @@ export function ImportSessionDialog({
                         <li key={session.sessionId}>
                           <button
                             type="button"
-                            disabled={importingSessionId !== null}
+                            disabled={
+                              importingSessionId !== null ||
+                              unavailableProviders.has(session.provider)
+                            }
                             onClick={() => handleImport(session)}
-                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:opacity-50"
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
                           >
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-sm">

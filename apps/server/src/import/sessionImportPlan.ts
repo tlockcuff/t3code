@@ -1,3 +1,9 @@
+import {
+  defaultInstanceIdForDriver,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import type { ImportableProvider, ImportedMessage } from "./sessionTranscript.ts";
@@ -25,6 +31,53 @@ export const isUuid = (value: string): boolean => UUID_PATTERN.test(value);
  */
 export const driverKindForProvider = (provider: ImportableProvider): string =>
   provider === "claude" ? "claudeAgent" : "codex";
+
+const isProviderInstanceUsable = (snapshot: ServerProvider): boolean =>
+  snapshot.enabled && snapshot.availability !== "unavailable";
+
+/**
+ * Resolves the model selection an imported thread must run under.
+ *
+ * The thread's `modelSelection.instanceId` is what the composer locks the thread to and what the
+ * runtime binding routes the resume cursor through, so it has to name an instance of the session's
+ * own driver. A caller-supplied selection is honoured only when it already does; otherwise it is
+ * replaced, because carrying it through would hand a Claude cursor to the Codex adapter and lock
+ * the thread to a provider that cannot resume it.
+ *
+ * Returns `null` when the session's driver has no usable instance — the caller is expected to fail
+ * the import rather than create a thread whose original context can never be resumed.
+ */
+export const resolveImportModelSelection = (input: {
+  readonly driverKind: ProviderDriverKind;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly requested: ModelSelection;
+}): ModelSelection | null => {
+  const requestedSnapshot = input.providers.find(
+    (candidate) => candidate.instanceId === input.requested.instanceId,
+  );
+  if (
+    requestedSnapshot !== undefined &&
+    requestedSnapshot.driver === input.driverKind &&
+    isProviderInstanceUsable(requestedSnapshot)
+  ) {
+    return input.requested;
+  }
+
+  const defaultInstanceId = defaultInstanceIdForDriver(input.driverKind);
+  const usable = input.providers.filter(
+    (candidate) => candidate.driver === input.driverKind && isProviderInstanceUsable(candidate),
+  );
+  const snapshot =
+    usable.find((candidate) => candidate.instanceId === defaultInstanceId) ?? usable[0];
+  if (snapshot === undefined) return null;
+
+  // Custom models are user-authored aliases that may point anywhere; the first stock model is the
+  // safest default for a thread the user did not pick a model for.
+  const model = snapshot.models.find((candidate) => !candidate.isCustom) ?? snapshot.models[0];
+  if (model === undefined) return null;
+
+  return { instanceId: snapshot.instanceId, model: model.slug };
+};
 
 /**
  * Builds the provider-native resume cursor.

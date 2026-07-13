@@ -91,6 +91,7 @@ import {
   buildResumeCursor,
   driverKindForProvider,
   planBackfillMessages,
+  resolveImportModelSelection,
 } from "./import/sessionImportPlan.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
@@ -1245,6 +1246,21 @@ const makeWsRpcLayer = (
                 });
               }
 
+              // The imported session can only be resumed by its own driver, so the thread has to
+              // run on an instance of that driver regardless of what the caller asked for — the
+              // client sends the project's default selection, which is frequently another provider.
+              const driverKind = ProviderDriverKind.make(driverKindForProvider(input.provider));
+              const modelSelection = resolveImportModelSelection({
+                driverKind,
+                providers: yield* providerRegistry.getProviders,
+                requested: input.modelSelection,
+              });
+              if (modelSelection === null) {
+                return yield* new OrchestrationImportSessionError({
+                  message: `No enabled ${input.provider} provider is configured, so this session cannot be resumed.`,
+                });
+              }
+
               const parsed = loadSessionForImport(input.provider, input.filePath);
               if (parsed === null) {
                 return yield* new OrchestrationImportSessionError({
@@ -1266,7 +1282,7 @@ const makeWsRpcLayer = (
                 threadId: input.threadId,
                 projectId: input.projectId,
                 title: parsed.summary.title ?? `Imported ${input.provider} session`,
-                modelSelection: input.modelSelection,
+                modelSelection,
                 runtimeMode: "full-access",
                 interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
                 branch: parsed.summary.branch,
@@ -1292,8 +1308,8 @@ const makeWsRpcLayer = (
               // provider context instead of starting a blank session.
               yield* providerSessionDirectory.upsert({
                 threadId: input.threadId,
-                provider: ProviderDriverKind.make(driverKindForProvider(input.provider)),
-                providerInstanceId: input.modelSelection.instanceId,
+                provider: driverKind,
+                providerInstanceId: modelSelection.instanceId,
                 status: "stopped",
                 resumeCursor,
               });

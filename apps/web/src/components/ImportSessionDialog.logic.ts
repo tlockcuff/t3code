@@ -1,4 +1,10 @@
-import type { ImportableSession } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  type ImportableSession,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 
 /**
  * Grouping + filtering for the import picker. Sessions are grouped by provider, then by the working
@@ -19,6 +25,49 @@ export interface ImportSessionProviderGroup {
 export const PROVIDER_LABELS: Record<ImportableSession["provider"], string> = {
   claude: "Claude Code",
   codex: "Codex",
+};
+
+/**
+ * Session files are keyed by product name; the provider registry keys drivers by slug, and Claude's
+ * slug is `claudeAgent`. Mirrors the server's `driverKindForProvider`.
+ */
+export const driverKindForSessionProvider = (
+  provider: ImportableSession["provider"],
+): ProviderDriverKind => (provider === "claude" ? "claudeAgent" : "codex") as ProviderDriverKind;
+
+/**
+ * The model selection an imported session must run under.
+ *
+ * An imported session can only be resumed by the driver that wrote it, so the thread has to be
+ * created on an instance of *that* driver — not on the project's default, which is frequently a
+ * different provider and would lock the thread to a provider that cannot replay its context.
+ *
+ * Returns `null` when that driver has no enabled instance, which is what lets the picker disable
+ * the session up front instead of failing after the user clicks it. The server re-resolves this
+ * independently, so a stale snapshot here cannot produce a mismatched thread.
+ */
+export const resolveImportModelSelection = (
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ImportableSession["provider"],
+): ModelSelection | null => {
+  const driverKind = driverKindForSessionProvider(provider);
+  const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
+  const usable = providers.filter(
+    (candidate) =>
+      candidate.driver === driverKind &&
+      candidate.enabled &&
+      candidate.availability !== "unavailable",
+  );
+  const snapshot =
+    usable.find((candidate) => candidate.instanceId === defaultInstanceId) ?? usable[0];
+  if (snapshot === undefined) return null;
+
+  // Custom models are user-authored aliases that may point anywhere; the first stock model is the
+  // safest default for a thread the user did not pick a model for.
+  const model = snapshot.models.find((candidate) => !candidate.isCustom) ?? snapshot.models[0];
+  if (model === undefined) return null;
+
+  return { instanceId: snapshot.instanceId, model: model.slug };
 };
 
 const UNKNOWN_WORKSPACE = "Unknown workspace";

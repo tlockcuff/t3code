@@ -1,3 +1,4 @@
+import type { ModelSelection, ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -5,6 +6,7 @@ import {
   buildResumeCursor,
   driverKindForProvider,
   planBackfillMessages,
+  resolveImportModelSelection,
 } from "./sessionImportPlan.ts";
 import type { ImportedMessage } from "./sessionTranscript.ts";
 
@@ -41,6 +43,141 @@ describe("driverKindForProvider", () => {
 
   it("maps codex sessions to the codex driver slug", () => {
     expect(driverKindForProvider("codex")).toBe("codex");
+  });
+});
+
+const provider = (input: {
+  readonly instanceId: string;
+  readonly driver: string;
+  readonly models: ReadonlyArray<{ readonly slug: string; readonly isCustom?: boolean }>;
+  readonly enabled?: boolean;
+  readonly availability?: "available" | "unavailable";
+}): ServerProvider =>
+  ({
+    instanceId: input.instanceId,
+    driver: input.driver,
+    enabled: input.enabled ?? true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: {},
+    checkedAt: "2026-07-01T00:00:00.000Z",
+    availability: input.availability ?? "available",
+    models: input.models.map((model) => ({
+      slug: model.slug,
+      name: model.slug,
+      isCustom: model.isCustom ?? false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  }) as unknown as ServerProvider;
+
+const selection = (instanceId: string, model: string): ModelSelection =>
+  ({ instanceId, model }) as unknown as ModelSelection;
+
+const CLAUDE_AGENT = "claudeAgent" as ProviderDriverKind;
+const CODEX = "codex" as ProviderDriverKind;
+
+const CLAUDE_INSTANCE = provider({
+  instanceId: "claudeAgent",
+  driver: "claudeAgent",
+  models: [{ slug: "claude-opus-4-8" }],
+});
+const CODEX_INSTANCE = provider({
+  instanceId: "codex",
+  driver: "codex",
+  models: [{ slug: "gpt-5.4" }],
+});
+
+describe("resolveImportModelSelection", () => {
+  it("ignores a selection pointing at another provider, which would lock the thread to a driver that cannot resume it", () => {
+    // The regression: the web client sends the project's default selection, so importing a Claude
+    // session into a Codex-default project used to bind a Claude cursor to the Codex adapter.
+    expect(
+      resolveImportModelSelection({
+        driverKind: CLAUDE_AGENT,
+        providers: [CODEX_INSTANCE, CLAUDE_INSTANCE],
+        requested: selection("codex", "gpt-5.4"),
+      }),
+    ).toEqual({ instanceId: "claudeAgent", model: "claude-opus-4-8" });
+  });
+
+  it("keeps a selection that already names an instance of the session's own driver", () => {
+    const custom = provider({
+      instanceId: "claude_personal",
+      driver: "claudeAgent",
+      models: [{ slug: "claude-sonnet-5" }],
+    });
+    expect(
+      resolveImportModelSelection({
+        driverKind: CLAUDE_AGENT,
+        providers: [CLAUDE_INSTANCE, custom],
+        requested: selection("claude_personal", "claude-sonnet-5"),
+      }),
+    ).toEqual(selection("claude_personal", "claude-sonnet-5"));
+  });
+
+  it("falls back to a custom instance when the driver's default instance is disabled", () => {
+    const disabledDefault = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      models: [{ slug: "claude-opus-4-8" }],
+      enabled: false,
+    });
+    const custom = provider({
+      instanceId: "claude_personal",
+      driver: "claudeAgent",
+      models: [{ slug: "claude-sonnet-5" }],
+    });
+    expect(
+      resolveImportModelSelection({
+        driverKind: CLAUDE_AGENT,
+        providers: [disabledDefault, custom, CODEX_INSTANCE],
+        requested: selection("codex", "gpt-5.4"),
+      }),
+    ).toEqual({ instanceId: "claude_personal", model: "claude-sonnet-5" });
+  });
+
+  it("prefers a stock model over a user-authored custom alias", () => {
+    const withCustomFirst = provider({
+      instanceId: "codex",
+      driver: "codex",
+      models: [{ slug: "my-alias", isCustom: true }, { slug: "gpt-5.4" }],
+    });
+    expect(
+      resolveImportModelSelection({
+        driverKind: CODEX,
+        providers: [withCustomFirst],
+        requested: selection("claudeAgent", "claude-opus-4-8"),
+      }),
+    ).toEqual({ instanceId: "codex", model: "gpt-5.4" });
+  });
+
+  it("returns null when the session's driver has no enabled instance, so the import fails loudly", () => {
+    expect(
+      resolveImportModelSelection({
+        driverKind: CLAUDE_AGENT,
+        providers: [CODEX_INSTANCE],
+        requested: selection("codex", "gpt-5.4"),
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when the only instance of the driver is unavailable", () => {
+    const unavailable = provider({
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      models: [{ slug: "claude-opus-4-8" }],
+      availability: "unavailable",
+    });
+    expect(
+      resolveImportModelSelection({
+        driverKind: CLAUDE_AGENT,
+        providers: [unavailable, CODEX_INSTANCE],
+        requested: selection("claudeAgent", "claude-opus-4-8"),
+      }),
+    ).toBeNull();
   });
 });
 

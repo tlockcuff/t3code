@@ -49,6 +49,7 @@ import {
   ProjectId,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
+  type ServerProvider,
   type SidebarProjectGroupingMode,
   ThreadId,
 } from "@t3tools/contracts";
@@ -240,6 +241,7 @@ const SIDEBAR_LIST_ANIMATION_OPTIONS = {
   easing: "ease-out",
 } as const;
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
+const EMPTY_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const PROJECT_GROUPING_MODE_LABELS: Record<SidebarProjectGroupingMode, string> = {
   repository: "Group by repository",
   repository_path: "Group by repository path",
@@ -1918,6 +1920,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // sidebar already treats as canonical.
   const importTargetMember = project.memberProjects[0] ?? null;
 
+  // The imported thread runs on the provider that wrote the session, so the dialog resolves its own
+  // model selection from the configured instances rather than inheriting the project default.
+  const importTargetProviders = importTargetMember
+    ? (serverConfigs.get(importTargetMember.environmentId)?.providers ?? EMPTY_PROVIDERS)
+    : EMPTY_PROVIDERS;
+
   const handleImportSessionClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -2349,7 +2357,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         </div>
       </div>
 
-      {importTargetMember && importTargetMember.defaultModelSelection ? (
+      {importTargetMember ? (
         <ImportSessionDialog
           open={isImportDialogOpen}
           onOpenChange={setIsImportDialogOpen}
@@ -2357,7 +2365,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           projectId={importTargetMember.id}
           projectName={project.displayName}
           projectRoot={importTargetMember.workspaceRoot}
-          modelSelection={importTargetMember.defaultModelSelection}
+          providers={importTargetProviders}
           onImported={handleSessionImported}
         />
       ) : null}

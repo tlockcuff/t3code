@@ -96,6 +96,7 @@ import {
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { NotificationsSettingsSection } from "./NotificationsSettingsSection";
 import { useAtomCommand } from "../../state/use-atom-command";
 
 const THEME_OPTIONS = [
@@ -436,10 +437,29 @@ export function useSettingsRestore(onRestored?: () => void) {
       ) || settings.sidebarUsageDisplayMode !== DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode
         ? ["Sidebar usage"]
         : []),
+      ...(settings.notificationSoundEnabled !== DEFAULT_UNIFIED_SETTINGS.notificationSoundEnabled ||
+      settings.notificationSound !== DEFAULT_UNIFIED_SETTINGS.notificationSound ||
+      settings.notificationVolume !== DEFAULT_UNIFIED_SETTINGS.notificationVolume ||
+      settings.desktopNotificationsEnabled !==
+        DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled ||
+      settings.notifyOnCompletion !== DEFAULT_UNIFIED_SETTINGS.notifyOnCompletion ||
+      settings.notifyOnApproval !== DEFAULT_UNIFIED_SETTINGS.notifyOnApproval ||
+      settings.notifyOnInput !== DEFAULT_UNIFIED_SETTINGS.notifyOnInput ||
+      settings.notifyOnFailure !== DEFAULT_UNIFIED_SETTINGS.notifyOnFailure
+        ? ["Notifications"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ],
     [
       isGitWritingModelDirty,
+      settings.desktopNotificationsEnabled,
+      settings.notificationSound,
+      settings.notificationSoundEnabled,
+      settings.notificationVolume,
+      settings.notifyOnApproval,
+      settings.notifyOnCompletion,
+      settings.notifyOnFailure,
+      settings.notifyOnInput,
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
@@ -485,6 +505,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarUsageDrivers: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDrivers,
       sidebarUsageDisplayMode: DEFAULT_UNIFIED_SETTINGS.sidebarUsageDisplayMode,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+      notificationSoundEnabled: DEFAULT_UNIFIED_SETTINGS.notificationSoundEnabled,
+      notificationSound: DEFAULT_UNIFIED_SETTINGS.notificationSound,
+      notificationVolume: DEFAULT_UNIFIED_SETTINGS.notificationVolume,
+      desktopNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.desktopNotificationsEnabled,
+      notifyOnCompletion: DEFAULT_UNIFIED_SETTINGS.notifyOnCompletion,
+      notifyOnApproval: DEFAULT_UNIFIED_SETTINGS.notifyOnApproval,
+      notifyOnInput: DEFAULT_UNIFIED_SETTINGS.notifyOnInput,
+      notifyOnFailure: DEFAULT_UNIFIED_SETTINGS.notifyOnFailure,
     });
     onRestored?.();
   }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
@@ -1048,6 +1076,8 @@ export function GeneralSettingsPanel() {
           );
         })}
       </SettingsSection>
+
+      <NotificationsSettingsSection settings={settings} updateSettings={updateSettings} />
 
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
