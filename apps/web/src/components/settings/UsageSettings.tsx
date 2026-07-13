@@ -9,7 +9,13 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ArchiveIcon, ChevronDownIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  ChevronDownIcon,
+  FolderGit2Icon,
+  LoaderIcon,
+  RefreshCwIcon,
+} from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -24,13 +30,11 @@ import {
   formatUsageDisplayLabel,
   formatUsageReset,
   remainingFromUsed,
-  usageBarClass,
-  usageToneClass,
-} from "../sidebar/SidebarUsageStatus.logic";
+} from "@t3tools/client-runtime/state/provider-usage";
+import { usageBarClass, usageToneClass } from "../usageToneClasses";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Switch } from "../ui/switch";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { cn } from "~/lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -48,8 +52,6 @@ import {
   groupContextUsageByProject,
   HISTORY_WINDOW_META,
   machineProviderDriver,
-  sharePercent,
-  shortenUsageSourceLabel,
   summarizeHistoryWindows,
   summarizeLedgerByProvider,
   summarizeMachineUsageByProvider,
@@ -666,33 +668,47 @@ export function UsageSettingsPanel() {
           />
         ) : (
           projectGroups.map((group) => (
-            <div key={group.projectId} className="border-t border-border/60 first:border-t-0">
-              <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold tracking-[-0.01em]">
-                    {group.projectTitle}
+            <section
+              key={group.projectId}
+              aria-label={`Project ${group.projectTitle}`}
+              className="mx-2 my-2 overflow-hidden rounded-xl border border-border/70 bg-muted/[0.16] first:mt-2 last:mb-2"
+            >
+              <div className="flex flex-col gap-2 border-b border-border/60 bg-muted/35 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background/70 text-muted-foreground">
+                    <FolderGit2Icon className="size-3.5" />
                   </div>
-                  <div className="text-[11px] text-muted-foreground/70">
-                    {group.threadCount} thread{group.threadCount === 1 ? "" : "s"}
-                    {" · "}
-                    {formatContextUsageTokens(group.totalUsedTokens)} in context
-                    {group.totalProcessedTokens > 0
-                      ? ` · ${formatContextUsageTokens(group.totalProcessedTokens)} processed`
-                      : ""}
+                  <div className="min-w-0">
+                    <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-[0.11em] text-muted-foreground/65">
+                      Project
+                    </div>
+                    <h3 className="truncate text-[13px] font-semibold tracking-[-0.01em] text-foreground">
+                      {group.projectTitle}
+                    </h3>
+                    <div className="text-[11px] text-muted-foreground/70">
+                      {group.threadCount} thread{group.threadCount === 1 ? "" : "s"}
+                      {" · "}
+                      {formatContextUsageTokens(group.totalUsedTokens)} in context
+                      {group.totalProcessedTokens > 0
+                        ? ` · ${formatContextUsageTokens(group.totalProcessedTokens)} processed`
+                        : ""}
+                    </div>
                   </div>
                 </div>
-                <div className="text-[11px] tabular-nums text-muted-foreground">
+                <div className="self-end rounded-md bg-background/65 px-2 py-1 text-[11px] tabular-nums text-muted-foreground sm:self-auto">
                   Peak fill {formatFillPercent(group.maxFillPercent)}
                 </div>
               </div>
-              {group.threads.map((thread) => (
-                <ThreadContextRow
-                  key={thread.threadId}
-                  thread={thread}
-                  environmentId={environmentId}
-                />
-              ))}
-            </div>
+              <div className="bg-card/35">
+                {group.threads.map((thread) => (
+                  <ThreadContextRow
+                    key={thread.threadId}
+                    thread={thread}
+                    environmentId={environmentId}
+                  />
+                ))}
+              </div>
+            </section>
           ))
         )}
       </SettingsSection>

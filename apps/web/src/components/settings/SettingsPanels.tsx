@@ -79,7 +79,7 @@ import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   normalizeSidebarUsageDrivers,
   USAGE_SIDEBAR_DRIVERS,
-} from "../sidebar/SidebarUsageStatus.logic";
+} from "@t3tools/client-runtime/state/provider-usage";
 import {
   buildProviderInstanceUpdatePatch,
   formatDiagnosticsDescription,

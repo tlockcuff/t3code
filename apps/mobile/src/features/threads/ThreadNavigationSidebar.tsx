@@ -48,6 +48,7 @@ import { usePendingTaskListActions } from "../home/usePendingTaskListActions";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { WorkspaceConnectionStatus } from "../home/WorkspaceConnectionStatus";
 import { shouldShowWorkspaceConnectionStatus } from "../home/workspace-connection-status";
+import { SidebarUsageStatus } from "../usage/SidebarUsageStatus";
 import { SidebarHeaderActions } from "./sidebar-header-actions";
 import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
@@ -576,7 +577,7 @@ function ThreadNavigationSidebarPane(
                 contentContainerStyle={[
                   styles.threadListContent,
                   {
-                    paddingBottom: Math.max(insets.bottom, 16) + 16,
+                    paddingBottom: 16,
                     paddingTop: 6,
                   },
                 ]}
@@ -602,6 +603,7 @@ function ThreadNavigationSidebarPane(
               />
             </GestureDetector>
           </SwipeableScrollGateProvider>
+          <SidebarUsageStatus bottomInset={Math.max(insets.bottom, 12)} />
         </View>
       </>
     );
@@ -618,7 +620,7 @@ function ThreadNavigationSidebarPane(
         borderRightWidth: StyleSheet.hairlineWidth,
       }}
     >
-      <View className="flex-1" style={{ paddingBottom: insets.bottom }}>
+      <View className="flex-1">
         <SwipeableScrollGateProvider enabled={swipeEnabled}>
           <GestureDetector gesture={sidebarScrollGesture}>
             <LegendList
@@ -633,7 +635,7 @@ function ThreadNavigationSidebarPane(
               contentContainerStyle={[
                 styles.threadListContent,
                 {
-                  paddingBottom: 16 + insets.bottom,
+                  paddingBottom: 16,
                   paddingTop: topListInset,
                 },
               ]}
@@ -649,6 +651,8 @@ function ThreadNavigationSidebarPane(
           </GestureDetector>
         </SwipeableScrollGateProvider>
       </View>
+
+      <SidebarUsageStatus bottomInset={Math.max(insets.bottom, 12)} />
 
       <View
         className="absolute inset-x-0 top-0 z-[4]"

@@ -53,6 +53,7 @@ import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetMachineUsageHistoryInput,
   OrchestrationGetSnapshotError,
+  OrchestrationImportSessionError,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffInput,
   OrchestrationListContextUsageInput,
@@ -659,6 +660,21 @@ export const WsOrchestrationGetMachineUsageHistoryRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationListImportableSessionsRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listImportableSessions,
+  {
+    payload: OrchestrationRpcSchemas.listImportableSessions.input,
+    success: OrchestrationRpcSchemas.listImportableSessions.output,
+    error: Schema.Union([OrchestrationImportSessionError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsOrchestrationImportSessionRpc = Rpc.make(ORCHESTRATION_WS_METHODS.importSession, {
+  payload: OrchestrationRpcSchemas.importSession.input,
+  success: OrchestrationRpcSchemas.importSession.output,
+  error: Schema.Union([OrchestrationImportSessionError, EnvironmentAuthorizationError]),
+});
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -781,6 +797,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationListContextUsageRpc,
   WsOrchestrationListTokenUsageLedgerRpc,
   WsOrchestrationGetMachineUsageHistoryRpc,
+  WsOrchestrationListImportableSessionsRpc,
+  WsOrchestrationImportSessionRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

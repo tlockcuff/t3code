@@ -5,7 +5,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { formatContextWindowTokens } from "../../lib/contextWindow";
-import { resolveUsagePlanLabel } from "../sidebar/SidebarUsageStatus.logic";
+import { resolveUsagePlanLabel } from "@t3tools/client-runtime/state/provider-usage";
 
 export type ContextUsageProjectGroup = {
   readonly projectId: string;
@@ -15,6 +15,8 @@ export type ContextUsageProjectGroup = {
   readonly totalUsedTokens: number;
   readonly totalProcessedTokens: number;
   readonly maxFillPercent: number | null;
+  /** Most recent thread activity in this project, used to order the groups. */
+  readonly lastUpdatedAt: string;
 };
 
 export type ProviderUsageDetailEntry = {
@@ -62,6 +64,7 @@ export function groupContextUsageByProject(
         totalUsedTokens: thread.usedTokens,
         totalProcessedTokens: thread.totalProcessedTokens ?? 0,
         maxFillPercent: fill,
+        lastUpdatedAt: thread.updatedAt,
       });
       continue;
     }
@@ -77,14 +80,23 @@ export function groupContextUsageByProject(
           : existing.maxFillPercent === null
             ? fill
             : Math.max(existing.maxFillPercent, fill),
+      lastUpdatedAt:
+        Date.parse(thread.updatedAt) > Date.parse(existing.lastUpdatedAt)
+          ? thread.updatedAt
+          : existing.lastUpdatedAt,
     });
   }
 
-  return [...groups.values()].sort((a, b) => {
-    const fillDelta = (b.maxFillPercent ?? -1) - (a.maxFillPercent ?? -1);
-    if (fillDelta !== 0) return fillDelta;
-    return a.projectTitle.localeCompare(b.projectTitle);
-  });
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      threads: [...group.threads].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
+    }))
+    .sort((a, b) => {
+      const activityDelta = Date.parse(b.lastUpdatedAt) - Date.parse(a.lastUpdatedAt);
+      if (activityDelta !== 0) return activityDelta;
+      return a.projectTitle.localeCompare(b.projectTitle);
+    });
 }
 
 export function getProviderUsageDetailEntries(

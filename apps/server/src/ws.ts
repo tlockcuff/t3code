@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -22,8 +23,10 @@ import {
   type AuthEnvironmentScope,
   AuthSessionId,
   CommandId,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   type DiscoveredLocalServerList,
   EventId,
+  MessageId,
   type OrchestrationCommand,
   type GitActionProgressEvent,
   type GitManagerServiceError,
@@ -34,6 +37,8 @@ import {
   type OrchestrationThreadStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
+  OrchestrationImportSessionError,
+  ProviderDriverKind,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
   OrchestrationRpcSchemas,
@@ -81,7 +86,14 @@ import {
   observeRpcStream as instrumentRpcStream,
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { discoverSessionsCached, loadSessionForImport } from "./import/sessionDiscovery.ts";
+import {
+  buildResumeCursor,
+  driverKindForProvider,
+  planBackfillMessages,
+} from "./import/sessionImportPlan.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -122,6 +134,7 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isImportSessionError = Schema.is(OrchestrationImportSessionError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -293,6 +306,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.listContextUsage, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.listTokenUsageLedger, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.getMachineUsageHistory, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.listImportableSessions, AuthOrchestrationReadScope],
+  [ORCHESTRATION_WS_METHODS.importSession, AuthOrchestrationOperateScope],
   [ORCHESTRATION_WS_METHODS.subscribeThread, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetConfig, AuthOrchestrationReadScope],
   [WS_METHODS.serverRefreshProviders, AuthOrchestrationOperateScope],
@@ -418,6 +433,7 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -1192,6 +1208,106 @@ const makeWsRpcLayer = (
                     message: "Failed to load T3 token usage ledger",
                     cause,
                   }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.listImportableSessions]: () =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listImportableSessions,
+            Effect.gen(function* () {
+              const nowMs = yield* Clock.currentTimeMillis;
+              return { sessions: discoverSessionsCached(nowMs) };
+            }).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("importable session discovery failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationImportSessionError({
+                    message: "Failed to list importable sessions",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.importSession]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.importSession,
+            Effect.gen(function* () {
+              const resumeCursor = buildResumeCursor(input.provider, input.sessionId);
+              if (resumeCursor === null) {
+                // Both adapters treat an unusable id as "start fresh", which would look like a
+                // successful import that quietly lost the conversation. Fail loudly instead.
+                return yield* new OrchestrationImportSessionError({
+                  message: `Session id is not resumable for provider ${input.provider}.`,
+                });
+              }
+
+              const parsed = loadSessionForImport(input.provider, input.filePath);
+              if (parsed === null) {
+                return yield* new OrchestrationImportSessionError({
+                  message: "Session file could not be read or contains no messages.",
+                });
+              }
+              if (parsed.summary.sessionId !== input.sessionId) {
+                return yield* new OrchestrationImportSessionError({
+                  message: "Session file no longer matches the requested session.",
+                });
+              }
+
+              const nowMs = yield* Clock.currentTimeMillis;
+              const createdAt = yield* nowIso;
+
+              yield* orchestrationEngine.dispatch({
+                type: "thread.create",
+                commandId: yield* serverCommandId("import-thread-create"),
+                threadId: input.threadId,
+                projectId: input.projectId,
+                title: parsed.summary.title ?? `Imported ${input.provider} session`,
+                modelSelection: input.modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                branch: parsed.summary.branch,
+                worktreePath: null,
+                createdAt,
+              });
+
+              // Backfill runs before the binding so a failure leaves no half-resumable thread.
+              const planned = planBackfillMessages(parsed.messages, nowMs);
+              for (const message of planned) {
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.message.append",
+                  commandId: yield* serverCommandId(`import-message-${message.messageId}`),
+                  threadId: input.threadId,
+                  messageId: MessageId.make(message.messageId),
+                  role: message.role,
+                  text: message.text,
+                  createdAt: message.createdAt,
+                });
+              }
+
+              // Pre-binding the native cursor is what makes the next turn resume the original
+              // provider context instead of starting a blank session.
+              yield* providerSessionDirectory.upsert({
+                threadId: input.threadId,
+                provider: ProviderDriverKind.make(driverKindForProvider(input.provider)),
+                providerInstanceId: input.modelSelection.instanceId,
+                status: "stopped",
+                resumeCursor,
+              });
+
+              return { threadId: input.threadId, importedMessageCount: planned.length };
+            }).pipe(
+              Effect.tapError((cause) => Effect.logError("session import failed", { cause })),
+              Effect.mapError((cause) =>
+                isImportSessionError(cause)
+                  ? cause
+                  : new OrchestrationImportSessionError({
+                      message: "Failed to import session",
+                      cause,
+                    }),
               ),
             ),
             { "rpc.aggregate": "orchestration" },

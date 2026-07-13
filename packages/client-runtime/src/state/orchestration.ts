@@ -1,7 +1,7 @@
 import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { createEnvironmentRpcCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export function createOrchestrationEnvironmentAtoms<R, E>(
@@ -31,6 +31,14 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
     machineUsageHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:machine-usage-history",
       tag: ORCHESTRATION_WS_METHODS.getMachineUsageHistory,
+    }),
+    importableSessions: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:importable-sessions",
+      tag: ORCHESTRATION_WS_METHODS.listImportableSessions,
+    }),
+    importSession: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:orchestration:import-session",
+      tag: ORCHESTRATION_WS_METHODS.importSession,
     }),
   };
 }

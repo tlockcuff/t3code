@@ -677,6 +677,41 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("republishes the healthy session so subscriptions resync on foreground", () =>
+    Effect.gen(function* () {
+      const probeCalled = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () => Deferred.succeed(probeCalled, undefined).pipe(Effect.asVoid),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      // Durable subscriptions re-issue on every session emission, so count them
+      // to prove a foreground wakeup gives them a chance to catch up. A live
+      // socket alone does not mean our projections are current: nothing arrived
+      // while backgrounded.
+      const emissions = yield* Ref.make(0);
+      yield* SubscriptionRef.changes(supervisor.session).pipe(
+        Stream.filter(Option.isSome),
+        Stream.runForEach(() => Ref.update(emissions, (count) => count + 1)),
+        Effect.forkScoped,
+      );
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* Ref.get(emissions).pipe(Effect.repeat({ until: (count) => count >= 1 }));
+
+      yield* harness.wake("application-active");
+      yield* Deferred.await(probeCalled);
+      yield* Ref.get(emissions).pipe(Effect.repeat({ until: (count) => count >= 2 }));
+
+      // Resynced without churning the connection itself.
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
   it.effect("reconnects when the foreground liveness probe fails", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

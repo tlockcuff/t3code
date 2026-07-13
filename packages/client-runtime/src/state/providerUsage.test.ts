@@ -9,7 +9,7 @@ import {
   getProviderUsageSidebarEntries,
   remainingFromUsed,
   resolveUsagePlanLabel,
-} from "./SidebarUsageStatus.logic";
+} from "./providerUsage.ts";
 
 function makeProvider(
   overrides: Partial<ServerProvider> & Pick<ServerProvider, "instanceId" | "driver">,
@@ -37,7 +37,8 @@ describe("SidebarUsageStatus.logic", () => {
 
   it("formats percent and reset labels", () => {
     expect(formatUsagePercent(77.2)).toBe("77%");
-    expect(formatUsageReset(Date.now() + 90 * 60_000, Date.now())).toBe("2h");
+    const now = 1_700_000_000_000;
+    expect(formatUsageReset(now + 90 * 60_000, now)).toBe("2h");
   });
 
   it("switches display percent between used and remaining", () => {

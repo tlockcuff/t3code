@@ -16,10 +16,9 @@ import {
   formatUsageReset,
   getProviderUsageSidebarEntries,
   remainingFromUsed,
-  usageBarClass,
-  usageToneClass,
   type ProviderUsageSidebarEntry,
-} from "./SidebarUsageStatus.logic";
+} from "@t3tools/client-runtime/state/provider-usage";
+import { usageBarClass, usageToneClass } from "../usageToneClasses";
 
 function UsageWindowRow(props: {
   readonly label: string;
@@ -29,7 +28,7 @@ function UsageWindowRow(props: {
 }) {
   const remaining = remainingFromUsed(props.usedPercent);
   const displayPercent = displayUsagePercent(props.usedPercent, props.displayMode);
-  const resetLabel = formatUsageReset(props.resetsAt);
+  const resetLabel = formatUsageReset(props.resetsAt, Date.now());
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2 text-[11px] leading-none">

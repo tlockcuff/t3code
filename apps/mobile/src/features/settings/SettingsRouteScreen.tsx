@@ -103,6 +103,7 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="chart.bar" label="Usage" target="SettingsUsage" />
           {/* Self-hosted push works without cloud sign-in, so the toggle belongs
               on the local screen too. Live Activities stay cloud-only (they need
               the relay's Clerk token exchange). */}
@@ -357,6 +358,7 @@ function ConfiguredSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="chart.bar" label="Usage" target="SettingsUsage" />
           <DeviceNotificationsRow />
           <SettingsSwitchRow
             disabled={

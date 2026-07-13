@@ -32,6 +32,8 @@ export const ORCHESTRATION_WS_METHODS = {
   listContextUsage: "orchestration.listContextUsage",
   listTokenUsageLedger: "orchestration.listTokenUsageLedger",
   getMachineUsageHistory: "orchestration.getMachineUsageHistory",
+  listImportableSessions: "orchestration.listImportableSessions",
+  importSession: "orchestration.importSession",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -751,6 +753,20 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Appends a finalized message without starting a provider turn. Used to backfill the transcript of
+ * an imported external session; internal-only so clients cannot fabricate history.
+ */
+const ThreadMessageAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -793,6 +809,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
+  ThreadMessageAppendCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
@@ -1276,6 +1293,50 @@ export const OrchestrationListContextUsageResult = Schema.Struct({
 });
 export type OrchestrationListContextUsageResult = typeof OrchestrationListContextUsageResult.Type;
 
+/** Providers whose on-disk sessions can be imported into a T3 thread. */
+export const ImportableSessionProvider = Schema.Literals(["claude", "codex"]);
+export type ImportableSessionProvider = typeof ImportableSessionProvider.Type;
+
+export const ImportableSession = Schema.Struct({
+  provider: ImportableSessionProvider,
+  /** Provider-native session id, used to resume the original context. */
+  sessionId: Schema.String,
+  filePath: Schema.String,
+  cwd: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(Schema.String),
+  updatedAt: Schema.NullOr(Schema.String),
+  messageCount: NonNegativeInt,
+});
+export type ImportableSession = typeof ImportableSession.Type;
+
+export const OrchestrationListImportableSessionsInput = Schema.Struct({});
+export type OrchestrationListImportableSessionsInput =
+  typeof OrchestrationListImportableSessionsInput.Type;
+
+export const OrchestrationListImportableSessionsResult = Schema.Struct({
+  sessions: Schema.Array(ImportableSession),
+});
+export type OrchestrationListImportableSessionsResult =
+  typeof OrchestrationListImportableSessionsResult.Type;
+
+export const OrchestrationImportSessionInput = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  provider: ImportableSessionProvider,
+  sessionId: Schema.String,
+  filePath: Schema.String,
+  modelSelection: ModelSelection,
+});
+export type OrchestrationImportSessionInput = typeof OrchestrationImportSessionInput.Type;
+
+export const OrchestrationImportSessionResult = Schema.Struct({
+  threadId: ThreadId,
+  importedMessageCount: NonNegativeInt,
+});
+export type OrchestrationImportSessionResult = typeof OrchestrationImportSessionResult.Type;
+
 export const UsageHistoryDayKey = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
 export type UsageHistoryDayKey = typeof UsageHistoryDayKey.Type;
 
@@ -1391,6 +1452,14 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationGetMachineUsageHistoryInput,
     output: OrchestrationGetMachineUsageHistoryResult,
   },
+  listImportableSessions: {
+    input: OrchestrationListImportableSessionsInput,
+    output: OrchestrationListImportableSessionsResult,
+  },
+  importSession: {
+    input: OrchestrationImportSessionInput,
+    output: OrchestrationImportSessionResult,
+  },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,
     output: OrchestrationThreadStreamItem,
@@ -1411,6 +1480,14 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<Orche
 
 export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<OrchestrationDispatchCommandError>()(
   "OrchestrationDispatchCommandError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationImportSessionError extends Schema.TaggedErrorClass<OrchestrationImportSessionError>()(
+  "OrchestrationImportSessionError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

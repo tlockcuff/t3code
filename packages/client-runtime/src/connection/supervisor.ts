@@ -427,6 +427,13 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
               );
               if (probeEvent._tag === "ProbeCompleted") {
                 yield* probeEvent.exit;
+                // The probe only proves the socket is alive, not that our
+                // projections are current: while backgrounded we received no
+                // events, and a surviving socket means no resubscribe would
+                // otherwise fire. Republish the session so durable
+                // subscriptions re-issue from their current resume cursor and
+                // replay whatever we missed.
+                yield* SubscriptionRef.set(session, Option.some(lease.session));
                 break;
               }
               switch (probeEvent.signal._tag) {

@@ -178,10 +178,15 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* applyItem({ kind: "snapshot", snapshot: base.value });
       }
 
-      const subscribeInput = Option.match(base, {
-        onNone: () => ({}),
-        onSome: (snapshot) => ({ afterSequence: snapshot.snapshotSequence }),
-      });
+      // Resolved per subscription attempt, not once: the subscription is
+      // re-issued on every new session, and resuming from the startup sequence
+      // would re-request events we already hold while risking a silent gap if
+      // the server has since compacted past it.
+      const subscribeInput = () =>
+        Option.match(SubscriptionRef.getUnsafe(state).snapshot, {
+          onNone: () => ({}),
+          onSome: (snapshot) => ({ afterSequence: snapshot.snapshotSequence }),
+        });
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeShell, subscribeInput, {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),

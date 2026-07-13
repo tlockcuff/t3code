@@ -75,7 +75,7 @@ export function displayUsagePercent(usedPercent: number, mode: SidebarUsageDispl
 
 export function formatUsageReset(
   resetsAt: number | null | undefined,
-  nowMs = Date.now(),
+  nowMs: number,
 ): string | null {
   if (typeof resetsAt !== "number" || !Number.isFinite(resetsAt)) return null;
   const deltaMs = resetsAt - nowMs;
@@ -143,15 +143,17 @@ export function getProviderUsageSidebarEntries(
   return entries;
 }
 
-/** Urgency colors always key off remaining capacity, regardless of display mode. */
-export function usageToneClass(remainingPercent: number): string {
-  if (remainingPercent <= 10) return "text-destructive";
-  if (remainingPercent <= 25) return "text-warning";
-  return "text-muted-foreground";
-}
+export type UsageTone = "critical" | "warning" | "normal";
 
-export function usageBarClass(remainingPercent: number): string {
-  if (remainingPercent <= 10) return "bg-destructive";
-  if (remainingPercent <= 25) return "bg-warning";
-  return "bg-primary/70";
+/**
+ * Urgency always keys off remaining capacity, regardless of display mode.
+ *
+ * This returns a semantic tone rather than a class name: this package is shared with the React
+ * Native app, and Tailwind only scans the web app's sources — so class names authored here would
+ * never be compiled into the stylesheet. Each platform maps the tone to its own styling.
+ */
+export function usageTone(remainingPercent: number): UsageTone {
+  if (remainingPercent <= 10) return "critical";
+  if (remainingPercent <= 25) return "warning";
+  return "normal";
 }

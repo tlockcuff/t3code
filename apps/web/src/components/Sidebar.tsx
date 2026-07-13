@@ -4,6 +4,7 @@ import {
   ChevronRightIcon,
   CloudIcon,
   ContainerIcon,
+  DownloadIcon,
   FolderPlusIcon,
   Globe2Icon,
   LoaderIcon,
@@ -44,6 +45,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
   DEFAULT_SERVER_SETTINGS,
+  type EnvironmentId,
   ProjectId,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
@@ -123,6 +125,7 @@ import {
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
+import { ImportSessionDialog } from "./ImportSessionDialog";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
@@ -1909,6 +1912,29 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [handleNewThread, isMobile, router, serverConfigs, setOpenMobile],
   );
 
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+
+  // Import targets a concrete project row; for a grouped project the primary member is the one the
+  // sidebar already treats as canonical.
+  const importTargetMember = project.memberProjects[0] ?? null;
+
+  const handleImportSessionClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsImportDialogOpen(true);
+  }, []);
+
+  const handleSessionImported = useCallback(
+    (environmentId: EnvironmentId, threadId: ThreadId) => {
+      if (isMobile) setOpenMobile(false);
+      void router.navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+      });
+    },
+    [isMobile, router, setOpenMobile],
+  );
+
   const handleCreateThreadClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -2285,10 +2311,26 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             </TooltipPopup>
           </Tooltip>
         )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <div className="pointer-events-none absolute top-[calc(50%+1px)] right-0.5 -translate-y-1/2 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+        <div className="pointer-events-none absolute top-[calc(50%+1px)] right-0.5 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity duration-150 max-sm:pointer-events-auto max-sm:opacity-100 group-hover/project-header:pointer-events-auto group-hover/project-header:opacity-100 group-focus-within/project-header:pointer-events-auto group-focus-within/project-header:opacity-100">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Import a session into ${project.displayName}`}
+                  data-testid="import-session-button"
+                  className={SIDEBAR_ICON_ACTION_BUTTON_CLASS}
+                  onClick={handleImportSessionClick}
+                >
+                  <DownloadIcon className="size-3.5" />
+                </button>
+              }
+            />
+            <TooltipPopup side="top">Import session</TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              render={
                 <button
                   type="button"
                   aria-label={`Create new thread in ${project.displayName}`}
@@ -2298,14 +2340,27 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 >
                   <SquarePenIcon className="size-3.5" />
                 </button>
-              </div>
-            }
-          />
-          <TooltipPopup side="top">
-            {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-          </TooltipPopup>
-        </Tooltip>
+              }
+            />
+            <TooltipPopup side="top">
+              {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
       </div>
+
+      {importTargetMember && importTargetMember.defaultModelSelection ? (
+        <ImportSessionDialog
+          open={isImportDialogOpen}
+          onOpenChange={setIsImportDialogOpen}
+          environmentId={importTargetMember.environmentId}
+          projectId={importTargetMember.id}
+          projectName={project.displayName}
+          projectRoot={importTargetMember.workspaceRoot}
+          modelSelection={importTargetMember.defaultModelSelection}
+          onImported={handleSessionImported}
+        />
+      ) : null}
 
       <SidebarProjectThreadList
         projectKey={project.projectKey}

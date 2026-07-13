@@ -36,13 +36,14 @@ describe("UsageSettings.logic", () => {
     expect(formatFillPercent(42.2)).toBe("42%");
   });
 
-  it("groups threads by project and rolls up totals", () => {
+  it("groups threads by project, sorts by recent activity, and rolls up totals", () => {
     const groups = groupContextUsageByProject([
       makeThread({
         threadId: ThreadId.make("t1"),
         projectId: ProjectId.make("p1"),
         projectTitle: "Alpha",
         title: "Thread A",
+        updatedAt: "2026-07-09T12:00:00.000Z",
         usedTokens: 40_000,
         maxTokens: 100_000,
         totalProcessedTokens: 80_000,
@@ -52,6 +53,7 @@ describe("UsageSettings.logic", () => {
         projectId: ProjectId.make("p1"),
         projectTitle: "Alpha",
         title: "Thread B",
+        updatedAt: "2026-07-11T12:00:00.000Z",
         usedTokens: 10_000,
         maxTokens: 200_000,
         totalProcessedTokens: 12_000,
@@ -61,6 +63,7 @@ describe("UsageSettings.logic", () => {
         projectId: ProjectId.make("p2"),
         projectTitle: "Beta",
         title: "Thread C",
+        updatedAt: "2026-07-10T12:00:00.000Z",
         usedTokens: 90_000,
         maxTokens: 100_000,
         totalProcessedTokens: null,
@@ -68,13 +71,18 @@ describe("UsageSettings.logic", () => {
     ]);
 
     expect(groups).toHaveLength(2);
-    expect(groups[0]?.projectTitle).toBe("Beta");
-    expect(groups[0]?.maxFillPercent).toBe(90);
-    expect(groups[1]?.projectTitle).toBe("Alpha");
-    expect(groups[1]?.threadCount).toBe(2);
-    expect(groups[1]?.totalUsedTokens).toBe(50_000);
-    expect(groups[1]?.totalProcessedTokens).toBe(92_000);
-    expect(groups[1]?.maxFillPercent).toBe(40);
+    expect(groups[0]?.projectTitle).toBe("Alpha");
+    expect(groups[0]?.lastUpdatedAt).toBe("2026-07-11T12:00:00.000Z");
+    expect(groups[0]?.threads.map((thread) => thread.threadId)).toEqual([
+      ThreadId.make("t2"),
+      ThreadId.make("t1"),
+    ]);
+    expect(groups[0]?.threadCount).toBe(2);
+    expect(groups[0]?.totalUsedTokens).toBe(50_000);
+    expect(groups[0]?.totalProcessedTokens).toBe(92_000);
+    expect(groups[0]?.maxFillPercent).toBe(40);
+    expect(groups[1]?.projectTitle).toBe("Beta");
+    expect(groups[1]?.maxFillPercent).toBe(90);
   });
 
   it("summarizes today/yesterday/7d/30d windows", () => {

@@ -147,9 +147,19 @@ export function runStream<TTag extends EnvironmentStreamCommandRpcTag>(
   );
 }
 
+/**
+ * Input for a durable subscription. Pass a thunk when the input carries a
+ * resume cursor: the subscription is re-issued on every new session, and a
+ * by-value input would replay the cursor captured at startup instead of the one
+ * the caller has since advanced to, silently dropping every event in between.
+ */
+export type EnvironmentRpcSubscribeInput<TTag extends EnvironmentSubscriptionRpcTag> =
+  | EnvironmentRpcInput<TTag>
+  | (() => EnvironmentRpcInput<TTag>);
+
 export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
   tag: TTag,
-  input: EnvironmentRpcInput<TTag>,
+  input: EnvironmentRpcSubscribeInput<TTag>,
   options?: {
     readonly onExpectedFailure?: (
       cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
@@ -161,6 +171,10 @@ export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
   EnvironmentRpcStreamFailure<TTag>,
   EnvironmentSupervisor
 > {
+  const resolveInput = (): EnvironmentRpcInput<TTag> =>
+    typeof input === "function"
+      ? (input as () => EnvironmentRpcInput<TTag>)()
+      : (input as EnvironmentRpcInput<TTag>);
   return Stream.unwrap(
     EnvironmentSupervisor.pipe(
       Effect.map((supervisor) =>
@@ -180,7 +194,7 @@ export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
                   EnvironmentRpcStreamFailure<TTag>
                 > =>
                   Stream.suspend(() =>
-                    method(input).pipe(
+                    method(resolveInput()).pipe(
                       Stream.catchCause((cause) => {
                         const hasOnlyExpectedFailures =
                           cause.reasons.length > 0 &&

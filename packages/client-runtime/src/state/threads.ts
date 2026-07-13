@@ -229,10 +229,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         yield* applyItem({ kind: "snapshot", snapshot: base.value });
       }
 
-      const subscribeInput = Option.match(base, {
-        onNone: () => ({ threadId }),
-        onSome: (snapshot) => ({ threadId, afterSequence: snapshot.snapshotSequence }),
-      });
+      // Resolved per subscription attempt, not once: see the equivalent comment
+      // in state/shell.ts. `lastSequence` tracks every applied item, so a
+      // reconnect resumes from what we actually hold rather than from the
+      // sequence we happened to start with.
+      const subscribeInput = () => {
+        const afterSequence = SubscriptionRef.getUnsafe(lastSequence);
+        return afterSequence > 0 ? { threadId, afterSequence } : { threadId };
+      };
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeThread, subscribeInput, {
         onExpectedFailure: setStreamError,

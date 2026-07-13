@@ -286,6 +286,35 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("resubscribes from the latest applied sequence, not the startup one", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD });
+
+      // Advance past the cached sequence, so the startup cursor is now stale.
+      const liveSequence = CACHED_SNAPSHOT_SEQUENCE + 1;
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", liveSequence));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Live title",
+      );
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
+
+      // A reconnect must resume from what we have actually applied. Resuming
+      // from the startup sequence would re-request events we already hold and,
+      // if the server had compacted past it, silently drop the ones we missed.
+      yield* harness.replaceSession;
+      yield* Ref.get(harness.subscriptionCount).pipe(
+        Effect.repeat({ until: (count) => count >= 2 }),
+      );
+
+      expect(yield* Ref.get(harness.subscriptionCount)).toBeGreaterThanOrEqual(2);
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(liveSequence);
+    }),
+  );
+
   it.effect("reduces live events and persists the latest thread", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
