@@ -46,8 +46,13 @@ import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsCl
 import { SettingsUsageRouteScreen } from "./features/settings/SettingsUsageRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
+import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsWaitlistRouteScreen } from "./features/settings/SettingsWaitlistRouteScreen";
+import {
+  SettingsLegalDocumentCloseHeaderButton,
+  SettingsLegalDocumentExternalHeaderButton,
+} from "./features/settings/components/SettingsLegalDocumentRouteScreen";
 import { useAppShortcuts } from "./features/shortcuts/useAppShortcuts";
 import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
@@ -106,6 +111,14 @@ const SOLID_HEADER_OPTIONS: AppScreenOptions = {
 const SHEET_SOLID_HEADER_OPTIONS: AppScreenOptions = {
   ...SOLID_HEADER_OPTIONS,
   unstable_navigationItemStyle: undefined,
+};
+
+const LEGAL_DOCUMENT_HEADER_OPTIONS: AppScreenOptions = {
+  ...SHEET_SOLID_HEADER_OPTIONS,
+  headerBackVisible: false,
+  headerLeft: SettingsLegalDocumentCloseHeaderButton,
+  headerRight: () => <SettingsLegalDocumentExternalHeaderButton />,
+  presentation: "fullScreenModal",
 };
 
 const SettingsSheetStack = createNativeStackNavigator({
@@ -248,6 +261,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitConfirm",
   "GitOverview",
   "NewTaskSheet",
+  "SettingsLegal",
   "SettingsSheet",
   "ThreadReviewComment",
 ]);
@@ -446,13 +460,21 @@ export const RootStack = createNativeStackNavigator({
             }),
       },
     }),
+    SettingsLegal: createNativeStackScreen({
+      screen: SettingsLegalRouteScreen,
+      linking: "settings/legal",
+      options: {
+        ...LEGAL_DOCUMENT_HEADER_OPTIONS,
+        title: "Legal",
+      },
+    }),
     ConnectOnboarding: createNativeStackScreen({
       screen: ConnectOnboardingRouteScreen,
       linking: "connect-onboarding",
       options: {
-        // Root screenOptions hide headers; formSheets that want the native
-        // title bar opt back in with the sheet header preset.
-        ...SHEET_SOLID_HEADER_OPTIONS,
+        // A root-level Android formSheet does not host the native stack bar;
+        // the route renders an embedded AndroidSheetHeader instead.
+        ...(Platform.OS === "android" ? { headerShown: false } : SHEET_SOLID_HEADER_OPTIONS),
         title: "Set up T3 Connect",
         gestureEnabled: true,
         presentation: "formSheet",
