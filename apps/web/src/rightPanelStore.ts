@@ -14,7 +14,15 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-export const RIGHT_PANEL_KINDS = ["plan", "diff", "files", "file", "preview", "terminal"] as const;
+export const RIGHT_PANEL_KINDS = [
+  "plan",
+  "subagents",
+  "diff",
+  "files",
+  "file",
+  "preview",
+  "terminal",
+] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type RightPanelSurface =
@@ -37,10 +45,11 @@ export type RightPanelSurface =
       revealLine: number | null;
       revealRequestId: number;
     }
-  | { id: "plan"; kind: "plan" };
+  | { id: "plan"; kind: "plan" }
+  | { id: "subagents"; kind: "subagents" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 7;
+const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -51,6 +60,11 @@ export interface ThreadRightPanelState {
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  /** Adds a singleton surface tab without activating it or opening the panel. */
+  reveal: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "preview" | "terminal">,
+  ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
@@ -92,6 +106,8 @@ const singletonSurface = (
       return { id: "files", kind };
     case "plan":
       return { id: "plan", kind };
+    case "subagents":
+      return { id: "subagents", kind };
   }
 };
 
@@ -131,6 +147,25 @@ const upsertSurface = (
     : [...current.surfaces, surface],
   activeSurfaceId: activate ? surface.id : current.activeSurfaceId,
 });
+
+/**
+ * Registers a tab without activating it or forcing the panel open. Used for
+ * surfaces that become *available* on their own (e.g. a subagent spawns): the
+ * user gets a discoverable tab, but their current view is never hijacked.
+ */
+const revealSurfaceIn = (
+  current: ThreadRightPanelState,
+  surface: RightPanelSurface,
+): ThreadRightPanelState => {
+  if (current.surfaces.some((entry) => entry.id === surface.id)) {
+    return current;
+  }
+  return {
+    isOpen: current.isOpen,
+    surfaces: [...current.surfaces, surface],
+    activeSurfaceId: current.activeSurfaceId ?? (current.isOpen ? surface.id : null),
+  };
+};
 
 const updateThread = (
   byThreadKey: Record<string, ThreadRightPanelState>,
@@ -248,6 +283,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             }
             return upsertSurface(current, singletonSurface(kind));
           }),
+        })),
+      reveal: (ref, kind) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            revealSurfaceIn(current, singletonSurface(kind)),
+          ),
         })),
       openBrowser: (ref, tabId) =>
         set((state) => ({

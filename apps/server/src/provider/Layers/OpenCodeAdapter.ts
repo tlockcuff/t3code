@@ -7,6 +7,7 @@ import {
   type ProviderSession,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   type ToolLifecycleItemType,
   TurnId,
@@ -736,6 +737,28 @@ export function makeOpenCodeAdapter(
 
           if (messageRole === "assistant") {
             yield* emitAssistantTextDelta(context, part, turnId, event);
+          }
+
+          // OpenCode reports subagent delegation as a first-class `subtask` part
+          // carrying the real agent name, rather than as a tool call.
+          if (part.type === "subtask") {
+            yield* emit({
+              ...(yield* buildEventBase({
+                threadId: context.session.threadId,
+                turnId,
+                itemId: part.id,
+                raw: event,
+              })),
+              type: "task.started",
+              ...(part.agent ? { subagentType: part.agent } : {}),
+              payload: {
+                taskId: RuntimeTaskId.make(part.id),
+                ...(part.description ? { description: part.description } : {}),
+                ...(part.agent ? { subagentType: part.agent } : {}),
+                toolUseId: RuntimeItemId.make(part.id),
+              },
+            });
+            break;
           }
 
           if (part.type === "tool") {

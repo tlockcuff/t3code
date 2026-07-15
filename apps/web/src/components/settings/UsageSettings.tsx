@@ -610,6 +610,11 @@ export function UsageSettingsPanel() {
           <SettingsRow title="Could not load machine usage" description={machineUsageQuery.error} />
         ) : (
           <>
+            <p className="px-4 pt-3 text-xs text-muted-foreground/80 sm:px-5">
+              Estimated at API list prices, so it is not what you were billed — subscription plans
+              (Claude Max, ChatGPT Plus) cover this usage. Token counts include cache reads, which
+              typically dominate agent sessions.
+            </p>
             <HistoryWindowStrip windows={machineWindows} />
             <ProviderHistoryList summaries={machineProviderSummaries} />
           </>

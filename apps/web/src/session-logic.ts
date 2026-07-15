@@ -78,12 +78,17 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  /** Provider tool-call id; keys a subagent's transcript to its `Task` row. */
+  toolCallId?: string;
+  /** Tool call that spawned the subagent this entry came from, if any. */
+  parentToolCallId?: string;
+  /** Subagent type that produced this entry (e.g. `code-reviewer`). */
+  subagentType?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
   activityKind: OrchestrationThreadActivity["kind"];
   collapseKey?: string;
-  toolCallId?: string;
 }
 
 export interface PendingApproval {
@@ -107,6 +112,32 @@ export interface ActivePlanState {
     step: string;
     status: "pending" | "inProgress" | "completed";
   }>;
+}
+
+export type SubagentStatus = "running" | "completed" | "failed" | "stopped";
+
+export interface SubagentTokenUsage {
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+}
+
+export interface SubagentState {
+  taskId: string;
+  turnId: TurnId | null;
+  /** Subagent type (e.g. `code-reviewer`) when the provider reports one. */
+  subagentType?: string;
+  /** Workflow name when this task belongs to a workflow run. */
+  workflowName?: string;
+  description: string;
+  status: SubagentStatus;
+  startedAt: string;
+  updatedAt: string;
+  /** Latest AI-generated progress summary, when the provider emits them. */
+  summary?: string;
+  /** Most recent tool the subagent invoked. */
+  lastToolName?: string;
+  usage?: SubagentTokenUsage;
 }
 
 export interface LatestProposedPlanState {
@@ -564,6 +595,97 @@ export function deriveActivePlanState(
   };
 }
 
+function extractSubagentUsage(value: unknown): SubagentTokenUsage | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const usage: SubagentTokenUsage = {};
+  if (typeof record.totalTokens === "number") {
+    usage.totalTokens = record.totalTokens;
+  } else if (typeof record.total_tokens === "number") {
+    usage.totalTokens = record.total_tokens;
+  }
+  if (typeof record.toolUses === "number") {
+    usage.toolUses = record.toolUses;
+  } else if (typeof record.tool_uses === "number") {
+    usage.toolUses = record.tool_uses;
+  }
+  if (typeof record.durationMs === "number") {
+    usage.durationMs = record.durationMs;
+  } else if (typeof record.duration_ms === "number") {
+    usage.durationMs = record.duration_ms;
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function toSubagentStatus(value: unknown): SubagentStatus {
+  return value === "failed" || value === "stopped" ? value : "completed";
+}
+
+/**
+ * Folds `task.started` / `task.progress` / `task.completed` activities into one
+ * row per subagent task. Providers that do not report subagent tasks simply
+ * yield an empty list.
+ */
+export function deriveSubagentStates(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SubagentState[] {
+  const byTaskId = new Map<string, SubagentState>();
+
+  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+    const payload = asRecord(activity.payload);
+    const taskId = asTrimmedString(payload?.taskId);
+    if (!taskId) {
+      continue;
+    }
+
+    const existing = byTaskId.get(taskId);
+    const description =
+      asTrimmedString(payload?.description) ??
+      asTrimmedString(payload?.detail) ??
+      existing?.description ??
+      "Subagent task";
+    const subagentType = asTrimmedString(payload?.subagentType) ?? existing?.subagentType;
+    const workflowName = asTrimmedString(payload?.workflowName) ?? existing?.workflowName;
+    const summary = asTrimmedString(payload?.summary) ?? existing?.summary;
+    const lastToolName = asTrimmedString(payload?.lastToolName) ?? existing?.lastToolName;
+    const usage = extractSubagentUsage(payload?.usage) ?? existing?.usage;
+
+    byTaskId.set(taskId, {
+      taskId,
+      turnId: activity.turnId,
+      description,
+      status: activity.kind === "task.completed" ? toSubagentStatus(payload?.status) : "running",
+      startedAt: existing?.startedAt ?? activity.createdAt,
+      updatedAt: activity.createdAt,
+      ...(subagentType ? { subagentType } : {}),
+      ...(workflowName ? { workflowName } : {}),
+      ...(summary ? { summary } : {}),
+      ...(lastToolName ? { lastToolName } : {}),
+      ...(usage ? { usage } : {}),
+    });
+  }
+
+  // Running tasks first, then most-recently-updated.
+  return [...byTaskId.values()].toSorted((left, right) => {
+    const leftRunning = left.status === "running" ? 0 : 1;
+    const rightRunning = right.status === "running" ? 0 : 1;
+    return (
+      leftRunning - rightRunning ||
+      left.startedAt.localeCompare(right.startedAt) ||
+      left.taskId.localeCompare(right.taskId)
+    );
+  });
+}
+
 export function findLatestProposedPlan(
   proposedPlans: ReadonlyArray<ProposedPlan>,
   latestTurnId: TurnId | string | null | undefined,
@@ -624,7 +746,44 @@ export function hasActionableProposedPlan(
   return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
+/**
+ * Groups a thread's work-log entries by the subagent that produced them.
+ *
+ * The key is the `Task` tool call that spawned the subagent, which is also the
+ * `toolCallId` of the collab-agent row in the main work log — so a caller can
+ * render the parent row and hang this transcript beneath it.
+ */
+export function deriveSubagentWorkLog(
+  entries: ReadonlyArray<WorkLogEntry>,
+): Map<string, WorkLogEntry[]> {
+  const byParent = new Map<string, WorkLogEntry[]>();
+  for (const entry of entries) {
+    if (!entry.parentToolCallId) {
+      continue;
+    }
+    const existing = byParent.get(entry.parentToolCallId);
+    if (existing) {
+      existing.push(entry);
+    } else {
+      byParent.set(entry.parentToolCallId, [entry]);
+    }
+  }
+  return byParent;
+}
+
+/**
+ * Work-log entries for the main thread only. Entries produced inside a subagent
+ * are excluded here and surfaced by {@link deriveSubagentWorkLog}, so they render
+ * nested under their parent `Task` row rather than as siblings of it.
+ */
 export function deriveWorkLogEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): WorkLogEntry[] {
+  return deriveAllWorkLogEntries(activities).filter((entry) => !entry.parentToolCallId);
+}
+
+/** Every work-log entry, main thread and subagents alike. */
+export function deriveAllWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
@@ -749,6 +908,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
+  const parentToolCallId = extractParentToolCallId(payload);
+  if (parentToolCallId) {
+    entry.parentToolCallId = parentToolCallId;
+  }
+  const subagentType = asTrimmedString(payload?.subagentType);
+  if (subagentType) {
+    entry.subagentType = subagentType;
+  }
   let toolLifecycleStatus = extractWorkLogToolLifecycleStatus(payload);
   if (!toolLifecycleStatus && activity.kind === "tool.completed") {
     toolLifecycleStatus = "completed";
@@ -789,6 +956,10 @@ function shouldCollapseToolLifecycleEntries(
     return false;
   }
   if (previous.activityKind === "tool.completed") {
+    return false;
+  }
+  // Never merge across agents: a subagent's `bash` is not the main thread's `bash`.
+  if (previous.parentToolCallId !== next.parentToolCallId) {
     return false;
   }
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
@@ -859,7 +1030,10 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
   if (normalizedLabel.length === 0 && detail.length === 0 && itemType.length === 0) {
     return undefined;
   }
-  return [itemType, normalizedLabel, detail].join("\u001f");
+  // Scope by origin so an identical-looking subagent call never collapses into a
+  // main-thread one (or into a different subagent's).
+  const origin = entry.parentToolCallId ?? "";
+  return [origin, itemType, normalizedLabel, detail].join("\u001f");
 }
 
 function normalizeCompactToolLabel(value: string): string {
@@ -1082,8 +1256,14 @@ function extractToolTitle(payload: Record<string, unknown> | null): string | nul
 }
 
 function extractToolCallId(payload: Record<string, unknown> | null): string | null {
+  // Top level is the canonical location; ACP adapters nest it under `data`.
   const data = asRecord(payload?.data);
-  return asTrimmedString(data?.toolCallId);
+  return asTrimmedString(payload?.toolCallId) ?? asTrimmedString(data?.toolCallId);
+}
+
+/** Set only for tool calls made inside a subagent. */
+function extractParentToolCallId(payload: Record<string, unknown> | null): string | null {
+  return asTrimmedString(payload?.parentToolCallId);
 }
 
 function normalizeInlinePreview(value: string): string {

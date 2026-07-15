@@ -307,6 +307,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:process-resource-history",
       tag: WS_METHODS.serverGetProcessResourceHistory,
     }),
+    skills: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:skills",
+      tag: WS_METHODS.skillsList,
+    }),
+    skillDetail: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:skill-detail",
+      tag: WS_METHODS.skillsRead,
+    }),
+    mcpServers: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:mcp-servers",
+      tag: WS_METHODS.mcpList,
+    }),
     configProjection,
     welcome: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:welcome",
@@ -327,6 +339,24 @@ export function createServerEnvironmentAtoms<R, E>(
     updateProvider: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:update-provider",
       tag: WS_METHODS.serverUpdateProvider,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    deleteSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:skill-delete",
+      tag: WS_METHODS.skillsDelete,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    addMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-add",
+      tag: WS_METHODS.mcpAdd,
+      scheduler: configScheduler,
+      concurrency: configConcurrency,
+    }),
+    removeMcpServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:mcp-remove",
+      tag: WS_METHODS.mcpRemove,
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),

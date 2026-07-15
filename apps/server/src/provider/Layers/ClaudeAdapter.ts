@@ -131,7 +131,8 @@ interface ClaudeTurnState {
    */
   readonly synthetic?: boolean;
   readonly items: Array<unknown>;
-  readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
+  /** Keyed by {@link blockKey} so subagent blocks cannot collide with main-thread ones. */
+  readonly assistantTextBlocks: Map<string, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
@@ -140,6 +141,10 @@ interface ClaudeTurnState {
 interface AssistantTextBlockState {
   readonly itemId: string;
   readonly blockIndex: number;
+  /** Key this block is stored under in `assistantTextBlocks`. See {@link blockKey}. */
+  readonly blockKey: string;
+  /** Set when this block came from a subagent rather than the main thread. */
+  readonly origin?: SubagentOrigin;
   emittedTextDelta: boolean;
   fallbackText: string;
   streamClosed: boolean;
@@ -167,6 +172,8 @@ interface ToolInFlight {
   readonly input: Record<string, unknown>;
   readonly partialInputJson: string;
   readonly lastEmittedInputFingerprint?: string;
+  /** Set when this tool call was made by a subagent rather than the main thread. */
+  readonly origin?: SubagentOrigin;
 }
 
 interface ClaudeTaskState {
@@ -174,6 +181,55 @@ interface ClaudeTaskState {
   subject: string;
   status: PlanStep["status"];
   readonly blockedBy: Set<string>;
+}
+
+/**
+ * Identifies the subagent a message came from. The Claude SDK stamps every
+ * assistant/user/stream_event message with `parent_tool_use_id` — the id of the
+ * `Task` tool_use block that spawned the subagent — plus the subagent's type.
+ * `undefined` means the message came from the main thread.
+ */
+interface SubagentOrigin {
+  readonly parentToolUseId: string;
+  readonly subagentType?: string;
+}
+
+/**
+ * Content-block indices restart at 0 for every message, so a subagent's block 0
+ * would otherwise clobber the main thread's block 0 in the per-turn block maps.
+ * Scoping the key by the spawning tool call keeps them disjoint.
+ */
+function blockKey(index: number, origin: SubagentOrigin | undefined): string {
+  return origin ? `${origin.parentToolUseId}:${index}` : `:${index}`;
+}
+
+function subagentOriginOf(message: SDKMessage): SubagentOrigin | undefined {
+  const parentToolUseId =
+    "parent_tool_use_id" in message && typeof message.parent_tool_use_id === "string"
+      ? message.parent_tool_use_id
+      : null;
+  if (!parentToolUseId) {
+    return undefined;
+  }
+  const subagentType =
+    "subagent_type" in message && typeof message.subagent_type === "string"
+      ? message.subagent_type
+      : undefined;
+  return { parentToolUseId, ...(subagentType ? { subagentType } : {}) };
+}
+
+/** Event fields identifying the subagent an event originated from. */
+function subagentEventFields(origin: SubagentOrigin | undefined): {
+  parentItemId?: RuntimeItemId;
+  subagentType?: string;
+} {
+  if (!origin) {
+    return {};
+  }
+  return {
+    parentItemId: asRuntimeItemId(origin.parentToolUseId),
+    ...(origin.subagentType ? { subagentType: origin.subagentType } : {}),
+  };
 }
 
 interface ClaudeSessionContext {
@@ -191,7 +247,8 @@ interface ClaudeSessionContext {
     id: TurnId;
     items: Array<unknown>;
   }>;
-  readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Keyed by {@link blockKey} so subagent tool blocks cannot collide with main-thread ones. */
+  readonly inFlightTools: Map<string, ToolInFlight>;
   readonly claudeTasks: Map<string, ClaudeTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastKnownContextWindow: number | undefined;
@@ -1470,6 +1527,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     options?: {
       readonly fallbackText?: string;
       readonly streamClosed?: boolean;
+      readonly origin?: SubagentOrigin;
     },
   ) {
     const turnState = context.turnState;
@@ -1477,7 +1535,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return undefined;
     }
 
-    const existing = turnState.assistantTextBlocks.get(blockIndex);
+    const key = blockKey(blockIndex, options?.origin);
+    const existing = turnState.assistantTextBlocks.get(key);
     if (existing && !existing.completionEmitted) {
       if (existing.fallbackText.length === 0 && options?.fallbackText) {
         existing.fallbackText = options.fallbackText;
@@ -1491,12 +1550,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const block: AssistantTextBlockState = {
       itemId: yield* randomUUIDv4,
       blockIndex,
+      blockKey: key,
       emittedTextDelta: false,
       fallbackText: options?.fallbackText ?? "",
       streamClosed: options?.streamClosed ?? false,
       completionEmitted: false,
+      ...(options?.origin ? { origin: options.origin } : {}),
     };
-    turnState.assistantTextBlocks.set(blockIndex, block);
+    turnState.assistantTextBlocks.set(key, block);
     turnState.assistantTextBlockOrder.push(block);
     return { blockIndex, block };
   });
@@ -1563,8 +1624,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     block.completionEmitted = true;
-    if (turnState.assistantTextBlocks.get(block.blockIndex) === block) {
-      turnState.assistantTextBlocks.delete(block.blockIndex);
+    if (turnState.assistantTextBlocks.get(block.blockKey) === block) {
+      turnState.assistantTextBlocks.delete(block.blockKey);
     }
 
     const stamp = yield* makeEventStamp();
@@ -2075,9 +2136,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const { event } = message;
+    const origin = subagentOriginOf(message);
 
     if (event.type === "message_delta") {
-      if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
+      // Subagent usage deltas describe the subagent's own context window, not
+      // the main thread's — folding them in would corrupt the context meter.
+      if (origin) {
         return;
       }
 
@@ -2108,14 +2172,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           return;
         }
         const streamKind = streamKindFromDeltaType(event.delta.type);
+        const deltaBlockKey = blockKey(event.index, origin);
         const assistantBlockEntry =
           event.delta.type === "text_delta"
-            ? yield* ensureAssistantTextBlock(context, event.index)
-            : context.turnState.assistantTextBlocks.get(event.index)
+            ? yield* ensureAssistantTextBlock(context, event.index, origin ? { origin } : {})
+            : context.turnState.assistantTextBlocks.get(deltaBlockKey)
               ? {
                   blockIndex: event.index,
                   block: context.turnState.assistantTextBlocks.get(
-                    event.index,
+                    deltaBlockKey,
                   ) as AssistantTextBlockState,
                 }
               : undefined;
@@ -2135,6 +2200,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 itemId: asRuntimeItemId(assistantBlockEntry.block.itemId),
               }
             : {}),
+          ...subagentEventFields(origin),
           payload: {
             streamKind,
             delta: deltaText,
@@ -2150,7 +2216,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       if (event.delta.type === "input_json_delta") {
-        const tool = context.inFlightTools.get(event.index);
+        const toolBlockKey = blockKey(event.index, origin);
+        const tool = context.inFlightTools.get(toolBlockKey);
         if (!tool || typeof event.delta.partial_json !== "string") {
           return;
         }
@@ -2169,7 +2236,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           parsedInput && Object.keys(parsedInput).length > 0
             ? toolInputFingerprint(parsedInput)
             : undefined;
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolBlockKey, nextTool);
 
         if (
           !parsedInput ||
@@ -2183,7 +2250,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...nextTool,
           lastEmittedInputFingerprint: nextFingerprint,
         };
-        context.inFlightTools.set(event.index, nextTool);
+        context.inFlightTools.set(toolBlockKey, nextTool);
 
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -2250,6 +2317,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       if (block.type === "text") {
         yield* ensureAssistantTextBlock(context, index, {
           fallbackText: extractContentBlockText(block),
+          ...(origin ? { origin } : {}),
         });
         return;
       }
@@ -2281,8 +2349,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         input: toolInput,
         partialInputJson: "",
         ...(inputFingerprint ? { lastEmittedInputFingerprint: inputFingerprint } : {}),
+        ...(origin ? { origin } : {}),
       };
-      context.inFlightTools.set(index, tool);
+      context.inFlightTools.set(blockKey(index, origin), tool);
 
       const stamp = yield* makeEventStamp();
       yield* offerRuntimeEvent({
@@ -2293,6 +2362,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
         itemId: asRuntimeItemId(tool.itemId),
+        ...subagentEventFields(origin),
         payload: {
           itemType: tool.itemType,
           status: "inProgress",
@@ -2317,7 +2387,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
     if (event.type === "content_block_stop") {
       const { index } = event;
-      const assistantBlock = context.turnState?.assistantTextBlocks.get(index);
+      const stopBlockKey = blockKey(index, origin);
+      const assistantBlock = context.turnState?.assistantTextBlocks.get(stopBlockKey);
       if (assistantBlock) {
         assistantBlock.streamClosed = true;
         yield* completeAssistantTextBlock(context, assistantBlock, {
@@ -2326,7 +2397,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       }
-      const tool = context.inFlightTools.get(index);
+      const tool = context.inFlightTools.get(stopBlockKey);
       if (!tool) {
         return;
       }
@@ -2341,7 +2412,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    if (context.turnState) {
+    const messageOrigin = subagentOriginOf(message);
+
+    // Subagent transcripts are rendered under their parent tool call, so they
+    // must not be folded into the main thread's item history.
+    if (context.turnState && !messageOrigin) {
       context.turnState.items.push(message.message);
     }
 
@@ -2354,6 +2429,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const [index, tool] = toolEntry;
+      // Prefer the tool's own origin: it is the authority on which agent issued
+      // the call, regardless of which message carried the result back.
+      const origin = tool.origin ?? messageOrigin;
       const itemStatus = toolResult.isError ? "failed" : "completed";
       const toolUseResult = readClaudeToolUseResult(message);
       const toolData = {
@@ -2371,6 +2449,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
         itemId: asRuntimeItemId(tool.itemId),
+        ...subagentEventFields(origin),
         payload: {
           itemType: tool.itemType,
           status: toolResult.isError ? "failed" : "inProgress",
@@ -2399,6 +2478,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           threadId: context.session.threadId,
           turnId: context.turnState.turnId,
           itemId: asRuntimeItemId(tool.itemId),
+          ...subagentEventFields(origin),
           payload: {
             streamKind,
             delta: toolResult.text,
@@ -2423,6 +2503,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         threadId: context.session.threadId,
         ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
         itemId: asRuntimeItemId(tool.itemId),
+        ...subagentEventFields(origin),
         payload: {
           itemType: tool.itemType,
           status: itemStatus,
@@ -2463,9 +2544,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    const origin = subagentOriginOf(message);
+
     // Auto-start a synthetic turn for assistant messages that arrive without
     // an active turn (e.g., background agent/subagent responses between user prompts).
-    if (!context.turnState) {
+    // Subagent messages never justify one: a subagent only runs inside a parent
+    // turn, so a missing turn here means the parent already settled.
+    if (!context.turnState && !origin) {
       const turnId = TurnId.make(yield* randomUUIDv4);
       const startedAt = yield* nowIso;
       context.turnState = {
@@ -2505,7 +2590,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
-    const content = message.message?.content;
+    // A subagent calling ExitPlanMode is proposing a plan to its own parent, not
+    // to the user — it must not surface as the thread's proposed plan.
+    const content = origin ? undefined : message.message?.content;
     if (Array.isArray(content)) {
       for (const block of content) {
         if (!block || typeof block !== "object") {
@@ -2534,13 +2621,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
     }
 
-    if (context.turnState) {
+    // Subagent output belongs to its nested transcript, not the main thread's
+    // item history or assistant text-block backfill.
+    if (context.turnState && !origin) {
       context.turnState.items.push(message.message);
       yield* backfillAssistantTextBlocksFromSnapshot(context, message);
     }
 
-    context.lastAssistantUuid = message.uuid;
-    yield* updateResumeCursor(context);
+    if (!origin) {
+      context.lastAssistantUuid = message.uuid;
+      yield* updateResumeCursor(context);
+    }
   });
 
   const handleResultMessage = Effect.fn("handleResultMessage")(function* (
@@ -2673,6 +2764,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             taskId: RuntimeTaskId.make(message.task_id),
             description: message.description,
             ...(message.task_type ? { taskType: message.task_type } : {}),
+            ...(message.tool_use_id ? { toolUseId: asRuntimeItemId(message.tool_use_id) } : {}),
+            ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
+            ...(message.workflow_name ? { workflowName: message.workflow_name } : {}),
           },
         });
         return;
@@ -2694,6 +2788,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
             ...(message.last_tool_name ? { lastToolName: message.last_tool_name } : {}),
+            ...(message.tool_use_id ? { toolUseId: asRuntimeItemId(message.tool_use_id) } : {}),
+            ...(message.subagent_type ? { subagentType: message.subagent_type } : {}),
           },
         });
         return;
@@ -2714,6 +2810,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             status: message.status,
             ...(message.summary ? { summary: message.summary } : {}),
             ...(message.usage ? { usage: message.usage } : {}),
+            ...(message.tool_use_id ? { toolUseId: asRuntimeItemId(message.tool_use_id) } : {}),
           },
         });
         return;
@@ -3110,7 +3207,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
       const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-      const inFlightTools = new Map<number, ToolInFlight>();
+      const inFlightTools = new Map<string, ToolInFlight>();
       const claudeTasks = new Map<string, ClaudeTaskState>();
 
       const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
@@ -3461,6 +3558,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
+        // Forward subagent text/thinking (not just their tool blocks) so the UI
+        // can render a nested transcript per subagent, and ask the SDK for
+        // periodic progress summaries to show while one is still running.
+        forwardSubagentText: true,
+        agentProgressSummaries: true,
         canUseTool,
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),

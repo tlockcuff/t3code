@@ -2,10 +2,11 @@ import { useAtomValue } from "@effect/atom-react";
 import type { SidebarUsageDisplayMode } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { primaryServerProvidersAtom } from "../../state/server";
+import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { cn } from "~/lib/utils";
@@ -19,6 +20,21 @@ import {
   type ProviderUsageSidebarEntry,
 } from "@t3tools/client-runtime/state/provider-usage";
 import { usageBarClass, usageToneClass } from "../usageToneClasses";
+
+/** Most recent provider usage snapshot timestamp across sidebar entries. */
+function latestUsageUpdatedAt(
+  entries: ReadonlyArray<ProviderUsageSidebarEntry>,
+): string | undefined {
+  let latest: string | undefined;
+  let latestMs = -Infinity;
+  for (const entry of entries) {
+    const ms = Date.parse(entry.usage.updatedAt);
+    if (!Number.isFinite(ms) || ms <= latestMs) continue;
+    latestMs = ms;
+    latest = entry.usage.updatedAt;
+  }
+  return latest;
+}
 
 function UsageWindowRow(props: {
   readonly label: string;
@@ -119,11 +135,23 @@ export function SidebarUsageStatus() {
     () => getProviderUsageSidebarEntries(providers, sidebarUsageDrivers),
     [providers, sidebarUsageDrivers],
   );
+  const lastUpdatedAt = useMemo(() => latestUsageUpdatedAt(entries), [entries]);
   const [open, setOpen] = useState(false);
+  // Tick while expanded so "Updated Xm ago" stays fresh without polling when collapsed.
+  const [, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [open]);
 
   if (entries.length === 0) {
     return null;
   }
+
+  const updatedLabel =
+    lastUpdatedAt !== undefined ? `Updated ${formatRelativeTimeLabel(lastUpdatedAt)}` : null;
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="w-full">
@@ -151,13 +179,17 @@ export function SidebarUsageStatus() {
           <button
             type="button"
             className={cn(
-              "rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground/80",
+              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-[11px]",
+              "text-muted-foreground/80",
               "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               "outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
             )}
             onClick={() => void navigate({ to: "/settings/usage" })}
           >
-            View usage details
+            <span className="min-w-0 truncate text-left">View usage details</span>
+            {updatedLabel ? (
+              <span className="shrink-0 tabular-nums text-muted-foreground/60">{updatedLabel}</span>
+            ) : null}
           </button>
         </div>
       </CollapsiblePanel>

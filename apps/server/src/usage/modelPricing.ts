@@ -114,9 +114,37 @@ export function estimateCostUsd(input: TokenCostInput): number {
   }
 
   const total = Math.max(0, input.totalTokens ?? 0);
-  // Blended fallback when only a total is known (Claude dailyModelTokens).
-  const blended = (rates.inputPerMTok + rates.outputPerMTok) / 2;
-  return tokensToUsd(total, blended);
+  return tokensToUsd(total, blendedRatePerMTok(rates));
+}
+
+/**
+ * Rate for a token total with no breakdown (Claude `dailyModelTokens`).
+ *
+ * The old blend was `(input + output) / 2`, which prices every token as if the
+ * mix were half fresh input and half output. Agentic totals are nothing like
+ * that: cache reads dominate, and they bill at a tenth of input. Measured over
+ * this repo's own transcripts the split is ~96% cache read, ~3% cache write,
+ * ~0.05% fresh input, ~0.2% output — so the old blend overcharged Opus totals
+ * by roughly 8x ($45/MTok against a true ~$5.6/MTok).
+ *
+ * These weights are a coarse approximation of that observed mix. They are only
+ * ever used when the real breakdown is unavailable; whenever a transcript
+ * supplies per-type counts, the exact tiered path above runs instead.
+ */
+const BLEND_WEIGHTS = {
+  cacheRead: 0.9,
+  cacheWrite: 0.05,
+  input: 0.02,
+  output: 0.03,
+} as const;
+
+function blendedRatePerMTok(rates: ModelPricingRates): number {
+  return (
+    rates.cacheReadPerMTok * BLEND_WEIGHTS.cacheRead +
+    rates.cacheWritePerMTok * BLEND_WEIGHTS.cacheWrite +
+    rates.inputPerMTok * BLEND_WEIGHTS.input +
+    rates.outputPerMTok * BLEND_WEIGHTS.output
+  );
 }
 
 export function roundUsd(value: number): number {

@@ -78,9 +78,11 @@ import {
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveSubagentStates,
+  deriveSubagentWorkLog,
   findSidebarProposedPlan,
   findLatestProposedPlan,
-  deriveWorkLogEntries,
+  deriveAllWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
 } from "../session-logic";
@@ -261,6 +263,7 @@ const PreviewPanel = lazy(() =>
 );
 const DiffPanel = lazy(() => import("./DiffPanel"));
 const FilePreviewPanel = lazy(() => import("./files/FilePreviewPanel"));
+const SubagentsPanel = lazy(() => import("./SubagentsPanel"));
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -1726,7 +1729,20 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
-  const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const allWorkLogEntries = useMemo(
+    () => deriveAllWorkLogEntries(threadActivities),
+    [threadActivities],
+  );
+  // Subagent entries render nested under their parent Task row, so they are kept
+  // out of the main work log rather than shown as siblings of it.
+  const workLogEntries = useMemo(
+    () => allWorkLogEntries.filter((entry) => !entry.parentToolCallId),
+    [allWorkLogEntries],
+  );
+  const subagentWorkLog = useMemo(
+    () => deriveSubagentWorkLog(allWorkLogEntries),
+    [allWorkLogEntries],
+  );
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -1791,6 +1807,7 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
+  const subagents = useMemo(() => deriveSubagentStates(threadActivities), [threadActivities]);
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
@@ -2778,6 +2795,14 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
+  const addPlanSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "plan");
+  }, [activeThreadRef]);
+  const addSubagentsSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "subagents");
+  }, [activeThreadRef]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -3482,6 +3507,15 @@ function ChatViewContent(props: ChatViewProps) {
     planSidebarDismissedForTurnRef.current = null;
     // activeThreadRef resets transitively with the active thread.
   }, [activeThread?.id]);
+
+  // Surface a Subagents tab as soon as the agent delegates work. Deliberately a
+  // reveal, not an open: the tab becomes discoverable without hijacking whatever
+  // the user is currently looking at in the right panel.
+  useEffect(() => {
+    if (subagents.length === 0) return;
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().reveal(activeThreadRef, "subagents");
+  }, [activeThreadRef, subagents.length]);
 
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
@@ -4982,6 +5016,10 @@ function ChatViewContent(props: ChatViewProps) {
         timestampFormat={timestampFormat}
         mode="embedded"
       />
+    ) : activeRightPanelSurface?.kind === "subagents" ? (
+      <Suspense fallback={null}>
+        <SubagentsPanel subagents={subagents} timestampFormat={timestampFormat} mode="embedded" />
+      </Suspense>
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
@@ -5095,6 +5133,7 @@ function ChatViewContent(props: ChatViewProps) {
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                subagentWorkLog={subagentWorkLog}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}
@@ -5314,6 +5353,8 @@ function ChatViewContent(props: ChatViewProps) {
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
+          onAddPlan={addPlanSurface}
+          onAddSubagents={addSubagentsSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
@@ -5341,6 +5382,8 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
+            onAddPlan={addPlanSurface}
+            onAddSubagents={addSubagentsSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}

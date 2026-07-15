@@ -15,6 +15,19 @@ import {
 } from "./filesystem.ts";
 import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
+  McpAddInput,
+  McpConfigError,
+  McpListOutput,
+  McpMutationOutput,
+  McpRemoveInput,
+  SkillsDeleteInput,
+  SkillsDeleteOutput,
+  SkillsError,
+  SkillsListOutput,
+  SkillsReadInput,
+  SkillsReadOutput,
+} from "./skills.ts";
+import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
   VcsSwitchRefResult,
@@ -218,6 +231,16 @@ export const WS_METHODS = {
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
   serverSignalProcess: "server.signalProcess",
 
+  // Skills (read-only view of installed agent skills)
+  skillsList: "skills.list",
+  skillsRead: "skills.read",
+  skillsDelete: "skills.delete",
+
+  // MCP connector management
+  mcpList: "mcp.list",
+  mcpAdd: "mcp.add",
+  mcpRemove: "mcp.remove",
+
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -319,6 +342,42 @@ export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess,
   payload: ServerSignalProcessInput,
   success: ServerSignalProcessResult,
   error: EnvironmentAuthorizationError,
+});
+
+export const WsSkillsListRpc = Rpc.make(WS_METHODS.skillsList, {
+  payload: Schema.Struct({}),
+  success: SkillsListOutput,
+  error: Schema.Union([SkillsError, EnvironmentAuthorizationError]),
+});
+
+export const WsSkillsReadRpc = Rpc.make(WS_METHODS.skillsRead, {
+  payload: SkillsReadInput,
+  success: SkillsReadOutput,
+  error: Schema.Union([SkillsError, EnvironmentAuthorizationError]),
+});
+
+export const WsSkillsDeleteRpc = Rpc.make(WS_METHODS.skillsDelete, {
+  payload: SkillsDeleteInput,
+  success: SkillsDeleteOutput,
+  error: Schema.Union([SkillsError, EnvironmentAuthorizationError]),
+});
+
+export const WsMcpListRpc = Rpc.make(WS_METHODS.mcpList, {
+  payload: Schema.Struct({}),
+  success: McpListOutput,
+  error: Schema.Union([McpConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsMcpAddRpc = Rpc.make(WS_METHODS.mcpAdd, {
+  payload: McpAddInput,
+  success: McpMutationOutput,
+  error: Schema.Union([McpConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsMcpRemoveRpc = Rpc.make(WS_METHODS.mcpRemove, {
+  payload: McpRemoveInput,
+  success: McpMutationOutput,
+  error: Schema.Union([McpConfigError, EnvironmentAuthorizationError]),
 });
 
 export const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
@@ -740,6 +799,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
+  WsSkillsListRpc,
+  WsSkillsReadRpc,
+  WsSkillsDeleteRpc,
+  WsMcpListRpc,
+  WsMcpAddRpc,
+  WsMcpRemoveRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsSourceControlLookupRepositoryRpc,

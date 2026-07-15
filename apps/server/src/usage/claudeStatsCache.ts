@@ -167,11 +167,37 @@ function listRecentSessionFiles(projectsRoot: string, fromDay: string): Array<st
     .map((file) => file.path);
 }
 
+/**
+ * Identity of a single Anthropic API response, for de-duplication.
+ *
+ * Claude Code copies prior messages into a new transcript whenever a session is
+ * resumed (`--continue`, `/resume`) or a subagent writes a sidechain, so the
+ * same assistant response is present in several `.jsonl` files. Summing every
+ * line therefore counts one API call many times — on a machine with a long
+ * resume history this roughly doubles the reported tokens.
+ *
+ * `message.id` is the Anthropic response id and is the real identity;
+ * `requestId` disambiguates the rare case where a retried request reuses an id.
+ * Lines carrying neither (older transcripts) cannot be deduplicated and are
+ * always counted, which is the safe direction: under-counting a real call is
+ * worse than double-counting a legacy one.
+ */
+function usageDedupeKey(row: {
+  readonly requestId?: string;
+  readonly message?: { readonly id?: string };
+}): string | null {
+  const messageId = row.message?.id?.trim();
+  if (!messageId) return null;
+  const requestId = row.requestId?.trim();
+  return requestId ? `${messageId}::${requestId}` : messageId;
+}
+
 function readSessionFileUsage(
   filePath: string,
   fromDay: string,
   toDay: string | undefined,
   byKey: Map<string, MutableDayRow>,
+  seenUsageKeys: Set<string>,
 ): void {
   let content: string;
   try {
@@ -192,7 +218,9 @@ function readSessionFileUsage(
     const row = parsed as {
       type?: string;
       timestamp?: string;
+      requestId?: string;
       message?: {
+        id?: string;
         model?: string;
         usage?: {
           input_tokens?: number;
@@ -208,6 +236,13 @@ function readSessionFileUsage(
     if (toDay && day > toDay) continue;
     const modelRaw = row.message.model?.trim() || null;
     if (modelRaw === "<synthetic>") continue;
+
+    const dedupeKey = usageDedupeKey(row);
+    if (dedupeKey !== null) {
+      if (seenUsageKeys.has(dedupeKey)) continue;
+      seenUsageKeys.add(dedupeKey);
+    }
+
     const usage = row.message.usage;
     addToRowMap(byKey, {
       day,
@@ -249,8 +284,12 @@ export function readClaudeSessionTranscriptUsage(input?: {
 
   const projectsRoot = NodePath.join(home, "projects");
   const byKey = new Map<string, MutableDayRow>();
+  // Shared across every file in the scan: a resumed session re-emits the same
+  // assistant messages into a *different* transcript, so a per-file set would
+  // miss exactly the duplicates that matter.
+  const seenUsageKeys = new Set<string>();
   for (const filePath of listRecentSessionFiles(projectsRoot, fromDay)) {
-    readSessionFileUsage(filePath, fromDay, input?.toDay, byKey);
+    readSessionFileUsage(filePath, fromDay, input?.toDay, byKey, seenUsageKeys);
   }
   const rows = finalizeRows(byKey);
   if (input?.homePath === undefined) {

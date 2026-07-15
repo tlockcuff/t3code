@@ -10,6 +10,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveAllWorkLogEntries,
+  deriveSubagentStates,
+  deriveSubagentWorkLog,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
@@ -1684,5 +1687,230 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveSubagentStates", () => {
+  it("returns nothing when no task activities are present", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ kind: "tool.completed", summary: "bash" }),
+    ];
+
+    expect(deriveSubagentStates(activities)).toEqual([]);
+  });
+
+  it("folds started/progress/completed into a single subagent per task id", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Task started",
+        payload: {
+          taskId: "task-1",
+          detail: "Review the database layer",
+          subagentType: "code-reviewer",
+        },
+      }),
+      makeActivity({
+        id: "progress",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        kind: "task.progress",
+        summary: "Reasoning update",
+        payload: {
+          taskId: "task-1",
+          description: "Review the database layer",
+          summary: "Reading migrations",
+          lastToolName: "Grep",
+          usage: { total_tokens: 12_500, tool_uses: 4 },
+        },
+      }),
+      makeActivity({
+        id: "completed",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        payload: { taskId: "task-1", status: "completed" },
+      }),
+    ];
+
+    const subagents = deriveSubagentStates(activities);
+    expect(subagents).toHaveLength(1);
+    expect(subagents[0]).toMatchObject({
+      taskId: "task-1",
+      subagentType: "code-reviewer",
+      description: "Review the database layer",
+      status: "completed",
+      startedAt: "2026-02-23T00:00:01.000Z",
+      updatedAt: "2026-02-23T00:00:09.000Z",
+      summary: "Reading migrations",
+      lastToolName: "Grep",
+      usage: { totalTokens: 12_500, toolUses: 4 },
+    });
+  });
+
+  it("treats a task without a completion as still running", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        kind: "task.started",
+        payload: { taskId: "task-1", detail: "Audit auth" },
+      }),
+    ];
+
+    const [subagent] = deriveSubagentStates(activities);
+    expect(subagent?.status).toBe("running");
+  });
+
+  it("preserves failed and stopped terminal statuses", () => {
+    const failed = deriveSubagentStates([
+      makeActivity({ kind: "task.started", payload: { taskId: "t" } }),
+      makeActivity({ kind: "task.completed", payload: { taskId: "t", status: "failed" } }),
+    ]);
+    const stopped = deriveSubagentStates([
+      makeActivity({ kind: "task.started", payload: { taskId: "t" } }),
+      makeActivity({ kind: "task.completed", payload: { taskId: "t", status: "stopped" } }),
+    ]);
+
+    expect(failed[0]?.status).toBe("failed");
+    expect(stopped[0]?.status).toBe("stopped");
+  });
+
+  it("tracks concurrent subagents separately and sorts running ones first", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        payload: { taskId: "done", detail: "Finished work" },
+      }),
+      makeActivity({
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.started",
+        payload: { taskId: "running", detail: "Ongoing work" },
+      }),
+      makeActivity({
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.completed",
+        payload: { taskId: "done", status: "completed" },
+      }),
+    ];
+
+    const subagents = deriveSubagentStates(activities);
+    expect(subagents.map((subagent) => subagent.taskId)).toEqual(["running", "done"]);
+  });
+
+  it("ignores task activities that carry no task id", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ kind: "task.progress", payload: { description: "orphaned" } }),
+    ];
+
+    expect(deriveSubagentStates(activities)).toEqual([]);
+  });
+
+  it("carries workflow name through when the provider reports one", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        kind: "task.started",
+        payload: { taskId: "task-1", detail: "Step 1", workflowName: "review-changes" },
+      }),
+    ];
+
+    expect(deriveSubagentStates(activities)[0]?.workflowName).toBe("review-changes");
+  });
+});
+
+describe("subagent work log nesting", () => {
+  const subagentToolActivity = (overrides: {
+    id: string;
+    toolCallId: string;
+    parentToolCallId?: string;
+    summary?: string;
+    createdAt?: string;
+  }): OrchestrationThreadActivity =>
+    makeActivity({
+      id: overrides.id,
+      createdAt: overrides.createdAt ?? "2026-02-23T00:00:01.000Z",
+      kind: "tool.completed",
+      summary: overrides.summary ?? "bash",
+      tone: "tool",
+      payload: {
+        itemType: "command_execution",
+        title: overrides.summary ?? "bash",
+        status: "completed",
+        toolCallId: overrides.toolCallId,
+        ...(overrides.parentToolCallId
+          ? { parentToolCallId: overrides.parentToolCallId, subagentType: "code-reviewer" }
+          : {}),
+      },
+    });
+
+  it("keeps subagent entries out of the main work log", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      subagentToolActivity({ id: "main", toolCallId: "toolu_main" }),
+      subagentToolActivity({
+        id: "child",
+        toolCallId: "toolu_child",
+        parentToolCallId: "toolu_task",
+        createdAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ];
+
+    const mainLog = deriveWorkLogEntries(activities);
+    expect(mainLog.map((entry) => entry.id)).toEqual(["main"]);
+
+    // ...but the full list still has both.
+    expect(deriveAllWorkLogEntries(activities)).toHaveLength(2);
+  });
+
+  it("groups subagent entries under the Task tool call that spawned them", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      subagentToolActivity({
+        id: "child-a",
+        toolCallId: "toolu_a",
+        parentToolCallId: "toolu_task",
+      }),
+      subagentToolActivity({
+        id: "child-b",
+        toolCallId: "toolu_b",
+        parentToolCallId: "toolu_task",
+        createdAt: "2026-02-23T00:00:02.000Z",
+      }),
+      subagentToolActivity({
+        id: "other-agent",
+        toolCallId: "toolu_c",
+        parentToolCallId: "toolu_other_task",
+        createdAt: "2026-02-23T00:00:03.000Z",
+      }),
+    ];
+
+    const tree = deriveSubagentWorkLog(deriveAllWorkLogEntries(activities));
+
+    expect(tree.get("toolu_task")?.map((entry) => entry.id)).toEqual(["child-a", "child-b"]);
+    expect(tree.get("toolu_other_task")?.map((entry) => entry.id)).toEqual(["other-agent"]);
+    expect(tree.get("toolu_task")?.[0]?.subagentType).toBe("code-reviewer");
+  });
+
+  it("never collapses an identical-looking subagent call into a main-thread one", () => {
+    // Same itemType and label; only the originating agent differs.
+    const activities: OrchestrationThreadActivity[] = [
+      subagentToolActivity({ id: "main", toolCallId: "toolu_main", summary: "bash" }),
+      subagentToolActivity({
+        id: "child",
+        toolCallId: "toolu_child",
+        parentToolCallId: "toolu_task",
+        summary: "bash",
+        createdAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ];
+
+    const all = deriveAllWorkLogEntries(activities);
+    expect(all.map((entry) => entry.id)).toEqual(["main", "child"]);
+  });
+
+  it("returns an empty tree when nothing is parented", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      subagentToolActivity({ id: "main", toolCallId: "toolu_main" }),
+    ];
+
+    expect(deriveSubagentWorkLog(deriveAllWorkLogEntries(activities)).size).toBe(0);
   });
 });

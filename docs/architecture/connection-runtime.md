@@ -36,10 +36,13 @@ The supervisor is the only retry owner.
    waits without consuming retry attempts.
 3. When online, the supervisor asks the broker for one prepared connection and
    asks the session factory for one RPC session.
-4. Transient failures retry forever with exponential backoff capped at 16
-   seconds.
-5. Connectivity changes, application activation, credential changes, and
-   explicit user retry interrupt the current wait and trigger a fresh attempt.
+4. Transient failures retry forever with exponential backoff starting at 500ms
+   and capped at 16 seconds. Connection setup times out after 10 seconds;
+   foreground liveness probes time out after 5 seconds.
+5. Connectivity changes, application activation, longer application resumes
+   (force reconnect), credential changes, and explicit user retry interrupt
+   the current wait and trigger a fresh attempt. Application activation also
+   re-samples platform connectivity so a stale offline bit cannot stick.
 6. Authentication or configuration failures remain blocked until an external
    wakeup changes the relevant input.
 7. An involuntary session close keeps the registration and cache, then retries.
@@ -125,9 +128,10 @@ Core state-machine tests use `@effect/vitest` and deterministic service layers.
 Required coverage includes:
 
 - offline startup and online wakeup;
-- forever retry with the 16-second cap;
+- forever retry with the 16-second cap (starting at 500ms);
 - explicit retry interrupting backoff;
 - authentication wakeups;
+- long application resume forcing reconnect;
 - involuntary close and reconnect;
 - explicit removal clearing all owned state;
 - relay token reuse and refresh;

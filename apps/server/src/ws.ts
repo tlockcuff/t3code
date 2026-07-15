@@ -98,7 +98,9 @@ import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDi
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as ProcessRunner from "./processRunner.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as SkillsMcp from "./skills/SkillsMcpService.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -322,6 +324,14 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
+  [WS_METHODS.skillsList, AuthOrchestrationReadScope],
+  [WS_METHODS.skillsRead, AuthOrchestrationReadScope],
+  // Deleting a skill removes a directory from disk — operate, not read.
+  [WS_METHODS.skillsDelete, AuthOrchestrationOperateScope],
+  [WS_METHODS.mcpList, AuthOrchestrationReadScope],
+  // add/remove mutate the machine's Claude config — treat as operate, not read.
+  [WS_METHODS.mcpAdd, AuthOrchestrationOperateScope],
+  [WS_METHODS.mcpRemove, AuthOrchestrationOperateScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
   [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
@@ -439,6 +449,7 @@ const makeWsRpcLayer = (
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const skillsMcp = yield* SkillsMcp.SkillsMcpService;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -1556,6 +1567,56 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.skillsList]: (_input) =>
+          observeRpcEffect(WS_METHODS.skillsList, skillsMcp.listSkills, {
+            "rpc.aggregate": "skills",
+          }),
+        [WS_METHODS.skillsRead]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.skillsRead,
+            skillsMcp
+              .readSkill(input.path)
+              .pipe(Effect.map((content) => ({ path: input.path, content }))),
+            { "rpc.aggregate": "skills" },
+          ),
+        [WS_METHODS.skillsDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.skillsDelete,
+            skillsMcp.deleteSkill(input.path).pipe(Effect.as({ ok: true })),
+            { "rpc.aggregate": "skills" },
+          ),
+        [WS_METHODS.mcpList]: (_input) =>
+          observeRpcEffect(WS_METHODS.mcpList, skillsMcp.listMcpServers, {
+            "rpc.aggregate": "mcp",
+          }),
+        [WS_METHODS.mcpAdd]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.mcpAdd,
+            skillsMcp
+              .addMcp({
+                name: input.name,
+                transport: input.transport,
+                // The contract's `local` scope maps straight through to the CLI.
+                scope: input.scope,
+                target: input.target,
+                ...(input.args !== undefined ? { args: input.args } : {}),
+                ...(input.env !== undefined ? { env: input.env } : {}),
+                ...(input.headers !== undefined ? { headers: input.headers } : {}),
+              })
+              .pipe(Effect.as({ ok: true })),
+            { "rpc.aggregate": "mcp" },
+          ),
+        [WS_METHODS.mcpRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.mcpRemove,
+            skillsMcp
+              .removeMcp({
+                name: input.name,
+                ...(input.scope !== undefined ? { scope: input.scope } : {}),
+              })
+              .pipe(Effect.as({ ok: true })),
+            { "rpc.aggregate": "mcp" },
+          ),
         [WS_METHODS.cloudGetRelayClientStatus]: (_input) =>
           observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClient.resolve, {
             "rpc.aggregate": "cloud",
@@ -2114,6 +2175,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
+              // SkillsMcp shells out to `claude mcp`, so it needs ProcessRunner.
+              // It is not otherwise in the ws layer's context (server.ts only
+              // provides it narrowly to PortScanner).
+              Layer.provide(SkillsMcp.layer.pipe(Layer.provide(ProcessRunner.layer))),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

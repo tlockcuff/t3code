@@ -29,9 +29,11 @@ import * as RpcSession from "../rpc/session.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 
-const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
-const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
-const CONNECTION_PROBE_TIMEOUT = "15 seconds";
+// Aggressive early retries help Tailscale/VPN paths rebind after sleep; cap
+// keeps sustained outages from hammering the peer.
+const RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000] as const;
+const CONNECTION_ESTABLISHMENT_TIMEOUT = "10 seconds";
+const CONNECTION_PROBE_TIMEOUT = "5 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
 interface SupervisorIntent {
@@ -251,6 +253,23 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   });
 
   const signal = Effect.fn("EnvironmentSupervisor.signal")(function* (next: SupervisorSignal) {
+    // Foreground wakeups re-sample connectivity before enqueueing. Mobile
+    // reachability is often stale after Tailscale/VPN sleep, and a false
+    // offline bit would otherwise stick until a real network-change event.
+    if (
+      next._tag === "Wakeup" &&
+      (next.reason === "application-active" || next.reason === "application-resume")
+    ) {
+      const network = yield* connectivity.status;
+      const changed = yield* Ref.modify(intent, (current) =>
+        current.network === network
+          ? ([false, current] as const)
+          : ([true, { ...current, network }] as const),
+      );
+      if (changed) {
+        yield* Queue.offer(signals, { _tag: "NetworkChanged", network });
+      }
+    }
     yield* Queue.offer(signals, next);
   });
 
@@ -402,6 +421,11 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             yield* logManagedRelayAccountChange;
             return;
           }
+          // Long mobile background (Tailscale/VPN/sleep) leaves half-open
+          // sockets that often hang probes. Force a clean reconnect instead.
+          if (next.reason === "application-resume") {
+            return;
+          }
           if (next.reason === "application-active") {
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({
@@ -447,8 +471,21 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                     return;
                   }
                   break;
-                case "ConnectRequested":
                 case "Wakeup":
+                  if (probeEvent.signal.reason === "application-resume") {
+                    yield* Fiber.interrupt(probe);
+                    return;
+                  }
+                  if (
+                    probeEvent.signal.reason === "credentials-changed" &&
+                    target._tag === "RelayConnectionTarget"
+                  ) {
+                    yield* Fiber.interrupt(probe);
+                    yield* logManagedRelayAccountChange;
+                    return;
+                  }
+                  break;
+                case "ConnectRequested":
                   break;
               }
             }

@@ -2947,6 +2947,108 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("carries subagent identity from task events into thread activities", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-subagent-started"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-subagent"),
+      payload: {
+        taskId: "task-abc",
+        description: "Review the database layer",
+        toolUseId: asItemId("toolu_parent"),
+        subagentType: "code-reviewer",
+        workflowName: "review-changes",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-subagent-started",
+      ),
+    );
+
+    const started = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-subagent-started",
+    );
+    const payload =
+      started?.payload && typeof started.payload === "object"
+        ? (started.payload as Record<string, unknown>)
+        : undefined;
+
+    expect(payload?.taskId).toBe("task-abc");
+    expect(payload?.toolCallId).toBe("toolu_parent");
+    expect(payload?.subagentType).toBe("code-reviewer");
+    expect(payload?.workflowName).toBe("review-changes");
+  });
+
+  it("tags tool activities with the subagent that issued them", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-subagent-tool"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-subagent"),
+      itemId: asItemId("toolu_child"),
+      parentItemId: asItemId("toolu_parent"),
+      subagentType: "code-reviewer",
+      payload: {
+        itemType: "command_execution",
+        title: "bash",
+        status: "completed",
+      },
+    });
+
+    // A main-thread tool call in the same turn must NOT be parented.
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-main-tool"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-subagent"),
+      itemId: asItemId("toolu_main"),
+      payload: {
+        itemType: "command_execution",
+        title: "bash",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-main-tool",
+      ),
+    );
+
+    const payloadOf = (id: string) => {
+      const activity = thread.activities.find(
+        (candidate: ProviderRuntimeTestActivity) => candidate.id === id,
+      );
+      return activity?.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : undefined;
+    };
+
+    const subagentTool = payloadOf("evt-subagent-tool");
+    expect(subagentTool?.toolCallId).toBe("toolu_child");
+    expect(subagentTool?.parentToolCallId).toBe("toolu_parent");
+    expect(subagentTool?.subagentType).toBe("code-reviewer");
+
+    const mainTool = payloadOf("evt-main-tool");
+    expect(mainTool?.toolCallId).toBe("toolu_main");
+    expect(mainTool?.parentToolCallId).toBeUndefined();
+  });
+
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

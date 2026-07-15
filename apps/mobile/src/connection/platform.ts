@@ -32,8 +32,17 @@ import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { connectionStorageLayer } from "./storage";
 
+/**
+ * Only treat a hard link-down as offline.
+ *
+ * `isInternetReachable === false` is intentionally ignored: Expo/iOS often
+ * report that for Tailscale/VPN mesh paths (CGNAT peers, brief captive checks,
+ * or "no general internet" while the tailnet is fine). Marking those offline
+ * tears down the session and waits forever for a network-change event that may
+ * never come.
+ */
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
-  if (state.isConnected === false || state.isInternetReachable === false) {
+  if (state.isConnected === false) {
     return "offline";
   }
   if (state.isConnected === true) {
@@ -42,16 +51,26 @@ function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "on
   return "unknown";
 }
 
+const readNetworkStatus = Effect.tryPromise({
+  try: () => Network.getNetworkStateAsync(),
+  catch: () => undefined,
+}).pipe(
+  Effect.match({
+    onFailure: () => "unknown" as const,
+    onSuccess: networkStatus,
+  }),
+);
+
+/**
+ * After this long in the background, force a full reconnect on foreground.
+ * Tailscale/VPN sockets routinely look half-open after phone sleep; a short
+ * probe then stacks 5–15s timeouts. 15s covers real suspend without thrashing
+ * on Control Center / brief inactive flickers.
+ */
+const FOREGROUND_FORCE_RECONNECT_AFTER_MS = 15_000;
+
 const connectivityLayer = Connectivity.layer({
-  status: Effect.tryPromise({
-    try: () => Network.getNetworkStateAsync(),
-    catch: () => undefined,
-  }).pipe(
-    Effect.match({
-      onFailure: () => "unknown" as const,
-      onSuccess: networkStatus,
-    }),
-  ),
+  status: readNetworkStatus,
   changes: Stream.callback((queue) =>
     Effect.acquireRelease(
       Effect.sync(() =>
@@ -66,15 +85,28 @@ const connectivityLayer = Connectivity.layer({
 
 const wakeupsLayer = Wakeups.layer({
   changes: Stream.merge(
-    Stream.callback<"application-active">((queue) =>
+    Stream.callback<"application-active" | "application-resume">((queue) =>
       Effect.acquireRelease(
-        Effect.sync(() =>
-          AppState.addEventListener("change", (state) => {
-            if (state === "active") {
-              Queue.offerUnsafe(queue, "application-active");
+        Effect.sync(() => {
+          let backgroundedAtMs: number | null = null;
+          return AppState.addEventListener("change", (state) => {
+            if (state === "background" || state === "inactive") {
+              backgroundedAtMs ??= Date.now();
+              return;
             }
-          }),
-        ),
+            if (state !== "active") {
+              return;
+            }
+            const backgroundedForMs = backgroundedAtMs === null ? 0 : Date.now() - backgroundedAtMs;
+            backgroundedAtMs = null;
+            Queue.offerUnsafe(
+              queue,
+              backgroundedForMs >= FOREGROUND_FORCE_RECONNECT_AFTER_MS
+                ? "application-resume"
+                : "application-active",
+            );
+          });
+        }),
         (subscription) => Effect.sync(() => subscription.remove()),
       ).pipe(Effect.asVoid),
     ),

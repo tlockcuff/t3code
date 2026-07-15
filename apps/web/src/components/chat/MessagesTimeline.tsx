@@ -134,6 +134,8 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
+  /** Work-log entries produced inside each subagent, keyed by its `Task` tool call id. */
+  subagentWorkLog: ReadonlyMap<string, ReadonlyArray<TimelineWorkEntry>>;
 }
 
 interface TimelineRowActivityState {
@@ -147,6 +149,7 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const EMPTY_SUBAGENT_WORK_LOG: ReadonlyMap<string, ReadonlyArray<TimelineWorkEntry>> = new Map();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -173,6 +176,8 @@ interface MessagesTimelineProps {
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
+  /** Work-log entries produced inside each subagent, keyed by its `Task` tool call id. */
+  subagentWorkLog?: ReadonlyMap<string, ReadonlyArray<TimelineWorkEntry>>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -206,6 +211,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
+  subagentWorkLog = EMPTY_SUBAGENT_WORK_LOG,
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
@@ -421,6 +427,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      subagentWorkLog,
     }),
     [
       timestampFormat,
@@ -435,6 +442,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
+      subagentWorkLog,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1900,10 +1908,20 @@ const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation(
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  /** Nested rows are rendered inside a parent's rail and never nest further. */
+  nested?: boolean;
 }) {
-  const { workEntry, workspaceRoot } = props;
+  const { workEntry, workspaceRoot, nested = false } = props;
   const activity = use(TimelineRowActivityCtx);
+  const { subagentWorkLog } = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
+  // A subagent's transcript hangs off the `Task` tool call that spawned it.
+  const subagentEntries = nested
+    ? undefined
+    : workEntry.toolCallId
+      ? subagentWorkLog.get(workEntry.toolCallId)
+      : undefined;
+  const hasSubagentEntries = (subagentEntries?.length ?? 0) > 0;
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
@@ -1917,7 +1935,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : rawPreview;
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
-  const canExpand = expandedBody !== null;
+  const canExpand = expandedBody !== null || hasSubagentEntries;
   const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
@@ -2041,15 +2059,29 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           </div>
         </div>
       </div>
-      {expanded && canExpand && expandedBody ? (
+      {expanded && canExpand ? (
         <div
           className="mt-1 ms-7 cursor-default border-s border-border/45 ps-3 pt-0.5"
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
-            {expandedBody}
-          </pre>
+          {expandedBody ? (
+            <pre className="max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-muted-foreground select-text">
+              {expandedBody}
+            </pre>
+          ) : null}
+          {hasSubagentEntries && subagentEntries ? (
+            <div className={cn("space-y-px", expandedBody && "mt-1.5")}>
+              {subagentEntries.map((childEntry) => (
+                <SimpleWorkEntryRow
+                  key={childEntry.id}
+                  workEntry={childEntry}
+                  workspaceRoot={workspaceRoot}
+                  nested
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

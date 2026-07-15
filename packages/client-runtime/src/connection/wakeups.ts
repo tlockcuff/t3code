@@ -2,7 +2,15 @@ import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import type * as Stream from "effect/Stream";
 
-export type ConnectionWakeup = "application-active" | "credentials-changed";
+/**
+ * - `application-active`: short foreground flicker or brief background. Probe the
+ *   live session and republish it so durable subscriptions catch up.
+ * - `application-resume`: longer background (common on mobile + Tailscale/VPN).
+ *   Force a full reconnect — half-open sockets often look alive until they hang.
+ * - `credentials-changed`: cloud/session credentials rotated; restart paths that
+ *   depend on them (managed relay).
+ */
+export type ConnectionWakeup = "application-active" | "application-resume" | "credentials-changed";
 
 export class ConnectionWakeups extends Context.Service<
   ConnectionWakeups,

@@ -74,6 +74,8 @@ interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   toolData?: unknown;
+  /** Tool call that spawned the subagent this entry came from, if any. */
+  parentToolCallId?: string;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -240,7 +242,11 @@ function deriveWorkLogEntries(
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
-    entries.push(toDerivedWorkLogEntry(activity));
+    const entry = toDerivedWorkLogEntry(activity);
+    // Subagent work has no nested surface on mobile yet; showing it inline would
+    // read as unattributed main-thread work. The Task row still summarizes it.
+    if (entry.parentToolCallId) continue;
+    entries.push(entry);
   }
   return collapseDerivedWorkLogEntries(entries);
 }
@@ -327,6 +333,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (requestKind) {
     entry.requestKind = requestKind;
+  }
+  const parentToolCallId = asTrimmedString(payload?.parentToolCallId);
+  if (parentToolCallId) {
+    entry.parentToolCallId = parentToolCallId;
   }
   let toolLifecycleStatus = extractWorkLogToolLifecycleStatus(payload);
   if (!toolLifecycleStatus && activity.kind === "tool.completed") {

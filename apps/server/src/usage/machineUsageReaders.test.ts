@@ -98,6 +98,75 @@ describe("machine usage readers", () => {
     }
   });
 
+  it("counts a resumed assistant message once across transcripts", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-dedupe-"));
+    try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
+
+      const assistantLine = (id: string, requestId: string) =>
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-07-10T12:00:00.000Z",
+          requestId,
+          message: {
+            id,
+            model: "claude-opus-4-8",
+            usage: {
+              input_tokens: 100,
+              cache_read_input_tokens: 1_000,
+              cache_creation_input_tokens: 200,
+              output_tokens: 50,
+            },
+          },
+        });
+
+      // Resuming a session copies prior messages into a new transcript, so the
+      // same (message.id, requestId) shows up in both files.
+      NodeFS.writeFileSync(
+        NodePath.join(sessionDir, "original.jsonl"),
+        assistantLine("msg_abc", "req_1"),
+      );
+      NodeFS.writeFileSync(
+        NodePath.join(sessionDir, "resumed.jsonl"),
+        [assistantLine("msg_abc", "req_1"), assistantLine("msg_def", "req_2")].join("\n"),
+      );
+
+      const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
+      const row = result.daily.find((entry) => entry.day === "2026-07-10");
+      // Two distinct messages × 1,350 tokens each — the copy is not re-counted.
+      expect(row?.totalTokens).toBe(2_700);
+      expect(row?.cachedInputTokens).toBe(2_000);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("still counts legacy transcript rows that carry no message id", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-legacy-"));
+    try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
+      const line = JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-07-10T12:00:00.000Z",
+        message: {
+          model: "claude-opus-4-8",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      });
+      // Undeduplicatable rows must not be silently dropped — under-counting a
+      // real call is worse than double-counting a legacy one.
+      NodeFS.writeFileSync(NodePath.join(sessionDir, "legacy.jsonl"), [line, line].join("\n"));
+
+      const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
+      const row = result.daily.find((entry) => entry.day === "2026-07-10");
+      expect(row?.totalTokens).toBe(30);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("reports missing when Claude stats-cache is absent", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-missing-"));
     try {

@@ -257,6 +257,14 @@ const ProviderRuntimeEventBase = Schema.Struct({
   turnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),
   requestId: Schema.optional(RuntimeRequestId),
+  /**
+   * Item id of the parent tool call when this event originated inside a
+   * subagent (e.g. Claude's `Task` tool). Absent on the main thread. Providers
+   * without a subagent concept never populate it.
+   */
+  parentItemId: Schema.optional(RuntimeItemId),
+  /** Subagent type that produced this event (e.g. `code-reviewer`). */
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
   providerRefs: Schema.optional(ProviderRefs),
   raw: Schema.optional(RuntimeEventRaw),
 });
@@ -463,6 +471,10 @@ const TaskStartedPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Tool call that spawned this task, linking it to its `Task` tool row. */
+  toolUseId: Schema.optional(RuntimeItemId),
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
+  workflowName: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
@@ -472,6 +484,8 @@ const TaskProgressPayload = Schema.Struct({
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(Schema.Unknown),
   lastToolName: Schema.optional(TrimmedNonEmptyStringSchema),
+  toolUseId: Schema.optional(RuntimeItemId),
+  subagentType: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
@@ -480,6 +494,7 @@ const TaskCompletedPayload = Schema.Struct({
   status: Schema.Literals(["completed", "failed", "stopped"]),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
   usage: Schema.optional(Schema.Unknown),
+  toolUseId: Schema.optional(RuntimeItemId),
 });
 export type TaskCompletedPayload = typeof TaskCompletedPayload.Type;
 

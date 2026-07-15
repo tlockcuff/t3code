@@ -466,3 +466,51 @@ describe("buildThreadFeed", () => {
     });
   });
 });
+
+describe("subagent activities", () => {
+  it("omits subagent tool calls from the feed so they are not read as main-thread work", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-subagent"),
+      projectId: ProjectId.make("project-1"),
+      title: "Subagent work",
+      activities: [
+        makeActivity({
+          id: EventId.make("main-tool"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Run tests",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            title: "Run tests",
+            itemType: "command_execution",
+            toolCallId: "toolu_main",
+          },
+        }),
+        makeActivity({
+          id: EventId.make("subagent-tool"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Run tests",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId: TurnId.make("turn-1"),
+          payload: {
+            title: "Run tests",
+            itemType: "command_execution",
+            toolCallId: "toolu_child",
+            parentToolCallId: "toolu_task",
+            subagentType: "code-reviewer",
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const group = feed.find((entry) => entry.type === "activity-group");
+    if (!group || group.type !== "activity-group") {
+      throw new Error("expected an activity group");
+    }
+
+    expect(group.activities.map((activity) => activity.id)).toEqual(["main-tool"]);
+  });
+});

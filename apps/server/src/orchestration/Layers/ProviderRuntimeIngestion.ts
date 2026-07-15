@@ -262,6 +262,19 @@ function requestKindFromCanonicalRequestType(
   }
 }
 
+/**
+ * Identity fields that let the client key a tool row and nest it under the
+ * subagent that issued it. `parentToolCallId` is only present for tool calls
+ * made inside a subagent; main-thread calls omit it.
+ */
+function toolIdentityPayload(event: ProviderRuntimeEvent): Record<string, string> {
+  return {
+    ...(event.itemId ? { toolCallId: event.itemId } : {}),
+    ...(event.parentItemId ? { parentToolCallId: event.parentItemId } : {}),
+    ...(event.subagentType ? { subagentType: event.subagentType } : {}),
+  };
+}
+
 function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
 ): ReadonlyArray<OrchestrationThreadActivity> {
@@ -456,6 +469,9 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
+            ...(event.payload.toolUseId ? { toolCallId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
+            ...(event.payload.workflowName ? { workflowName: event.payload.workflowName } : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
@@ -479,6 +495,8 @@ function runtimeEventToActivities(
             detail: truncateDetail(event.payload.summary ?? event.payload.description),
             ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
+            ...(event.payload.toolUseId ? { toolCallId: event.payload.toolUseId } : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -504,6 +522,7 @@ function runtimeEventToActivities(
             taskId: event.payload.taskId,
             status: event.payload.status,
             ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
+            ...(event.payload.toolUseId ? { toolCallId: event.payload.toolUseId } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -567,6 +586,7 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...toolIdentityPayload(event),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -590,6 +610,7 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...toolIdentityPayload(event),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
@@ -612,6 +633,7 @@ function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...toolIdentityPayload(event),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,

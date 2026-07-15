@@ -7,7 +7,9 @@ import {
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
+  PlugIcon,
   Settings2Icon,
+  SparklesIcon,
 } from "lucide-react";
 import { useCanGoBack, useNavigate } from "@tanstack/react-router";
 
@@ -27,6 +29,8 @@ export type SettingsSectionPath =
   | "/settings/general"
   | "/settings/keybindings"
   | "/settings/providers"
+  | "/settings/skills"
+  | "/settings/mcp"
   | "/settings/usage"
   | "/settings/source-control"
   | "/settings/connections"
@@ -40,6 +44,8 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   { label: "General", to: "/settings/general", icon: Settings2Icon },
   { label: "Keybindings", to: "/settings/keybindings", icon: KeyboardIcon },
   { label: "Providers", to: "/settings/providers", icon: BotIcon },
+  { label: "Skills", to: "/settings/skills", icon: SparklesIcon },
+  { label: "MCP", to: "/settings/mcp", icon: PlugIcon },
   { label: "Usage", to: "/settings/usage", icon: ChartColumnIcon },
   { label: "Source Control", to: "/settings/source-control", icon: GitBranchIcon },
   { label: "Connections", to: "/settings/connections", icon: Link2Icon },
