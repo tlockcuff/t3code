@@ -40,6 +40,7 @@ export interface ProjectThreadAwarenessInput {
     | "updatedAt"
     | "hasPendingApprovals"
     | "hasPendingUserInput"
+    | "hasRunningSubagents"
   >;
 }
 
@@ -97,7 +98,11 @@ function resolveThreadAwarenessPhase(
   if (thread.session?.status === "starting") {
     return "starting";
   }
-  if (thread.session?.status === "running" || thread.latestTurn?.state === "running") {
+  if (
+    thread.session?.status === "running" ||
+    thread.latestTurn?.state === "running" ||
+    thread.hasRunningSubagents
+  ) {
     return "running";
   }
   if (thread.latestTurn?.state === "completed") {

@@ -34,6 +34,12 @@ const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA journal_mode = WAL;`;
+    // NORMAL is safe under WAL (a crash can only lose the last transaction,
+    // never corrupt the DB) and avoids an fsync per commit.
+    yield* sql`PRAGMA synchronous = NORMAL;`;
+    // The CLI opens the same DB file as the server; without a busy timeout a
+    // concurrent writer fails instantly on SQLITE_BUSY instead of waiting.
+    yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations();
   }),

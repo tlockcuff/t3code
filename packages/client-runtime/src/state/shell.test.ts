@@ -35,6 +35,7 @@ function shellState(input: {
         ? Option.none()
         : Option.some({
             snapshotSequence: input.snapshotSequence ?? 1,
+            epoch: "test-epoch",
             updatedAt: input.updatedAt,
             projects: [],
             threads: [],

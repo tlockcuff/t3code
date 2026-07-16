@@ -263,7 +263,23 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   return typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:");
 }
 
+// Activities are append-only and immutable, so their derived presentation never
+// changes. During streaming, `buildThreadFeed` re-runs on every thread-detail
+// event over the full activity list; memoizing by activity object identity means
+// a new event only derives its own entry instead of every prior one.
+const derivedWorkLogEntryCache = new WeakMap<OrchestrationThreadActivity, DerivedWorkLogEntry>();
+
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+  const cached = derivedWorkLogEntryCache.get(activity);
+  if (cached) {
+    return cached;
+  }
+  const derived = computeDerivedWorkLogEntry(activity);
+  derivedWorkLogEntryCache.set(activity, derived);
+  return derived;
+}
+
+function computeDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
       ? (activity.payload as Record<string, unknown>)
@@ -1319,6 +1335,42 @@ export function buildPendingUserInputAnswers(
   return answers;
 }
 
+// Presentation for a work-log entry is a pure function of the entry, and
+// non-collapsed entries come straight from the identity-stable
+// `toDerivedWorkLogEntry` cache. Memoizing by entry identity means a streaming
+// event only builds strings for its own entry; merged/collapsed entries are
+// freshly created each build and fall through to a recompute, so output is
+// preserved exactly.
+const threadFeedActivityCache = new WeakMap<DerivedWorkLogEntry, ThreadFeedActivity>();
+
+function toThreadFeedActivity(entry: DerivedWorkLogEntry): ThreadFeedActivity {
+  const cached = threadFeedActivityCache.get(entry);
+  if (cached) {
+    return cached;
+  }
+  const summary = workEntryHeading(entry);
+  const detail = workEntryPreview(entry);
+  const fullDetail = buildWorkEntryExpandedBody(entry);
+  const activity: ThreadFeedActivity = {
+    id: entry.id,
+    createdAt: entry.createdAt,
+    turnId: entry.turnId,
+    summary,
+    detail,
+    fullDetail,
+    icon: workEntryIcon(entry),
+    copyText: [summary, detail, fullDetail]
+      .filter((value, index, values): value is string => {
+        return Boolean(value) && values.indexOf(value) === index;
+      })
+      .join("\n"),
+    toolLike: workLogEntryIsToolLike(entry),
+    status: workEntryStatus(entry),
+  };
+  threadFeedActivityCache.set(entry, activity);
+  return activity;
+}
+
 export function buildThreadFeed(
   thread: OrchestrationThread,
   options?: {
@@ -1346,33 +1398,13 @@ export function buildThreadFeed(
             oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt
           );
         })
-        .map<RawThreadFeedEntry>((entry) => {
-          const summary = workEntryHeading(entry);
-          const detail = workEntryPreview(entry);
-          const fullDetail = buildWorkEntryExpandedBody(entry);
-          return {
-            type: "activity",
-            id: entry.id,
-            createdAt: entry.createdAt,
-            turnId: entry.turnId,
-            activity: {
-              id: entry.id,
-              createdAt: entry.createdAt,
-              turnId: entry.turnId,
-              summary,
-              detail,
-              fullDetail,
-              icon: workEntryIcon(entry),
-              copyText: [summary, detail, fullDetail]
-                .filter((value, index, values): value is string => {
-                  return Boolean(value) && values.indexOf(value) === index;
-                })
-                .join("\n"),
-              toolLike: workLogEntryIsToolLike(entry),
-              status: workEntryStatus(entry),
-            },
-          };
-        }),
+        .map<RawThreadFeedEntry>((entry) => ({
+          type: "activity",
+          id: entry.id,
+          createdAt: entry.createdAt,
+          turnId: entry.turnId,
+          activity: toThreadFeedActivity(entry),
+        })),
     ],
     (s) => new Date(s.createdAt),
     Order.Date,

@@ -29,6 +29,7 @@ function thread(
   | "updatedAt"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasRunningSubagents"
 > {
   return {
     id: "thread-1" as ThreadId,
@@ -39,6 +40,7 @@ function thread(
     updatedAt: NOW,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasRunningSubagents: false,
     ...overrides,
   };
 }
@@ -100,6 +102,28 @@ describe("projectThreadAwareness", () => {
       modelTitle: "gpt-5.4",
       deepLink: "/threads/env-1/thread-1",
     });
+  });
+
+  it("projects running subagents as working even when the main session is ready", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      thread: thread({
+        hasRunningSubagents: true,
+        session: {
+          threadId: "thread-1" as ThreadId,
+          status: "ready",
+          providerName: "Codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    });
+
+    expect(state?.phase).toBe("running");
+    expect(state?.headline).toBe("Agent is working");
   });
 
   it("projects completed turns as completed even when teardown settled them as interrupted", () => {

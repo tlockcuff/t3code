@@ -40,6 +40,7 @@ const PREPARED: PreparedConnection = {
 
 const LIVE_SHELL_SNAPSHOT: OrchestrationShellSnapshot = {
   snapshotSequence: 1,
+  epoch: "test-epoch",
   projects: [],
   threads: [],
   updatedAt: "2026-06-06T00:00:00.000Z",
@@ -141,6 +142,7 @@ describe("environment shell synchronization", () => {
     Effect.gen(function* () {
       const cachedSnapshot: OrchestrationShellSnapshot = {
         snapshotSequence: 5,
+        epoch: "test-epoch",
         projects: [],
         threads: [],
         updatedAt: "2026-06-06T00:00:00.000Z",
@@ -199,6 +201,144 @@ describe("environment shell synchronization", () => {
 
       expect(yield* SubscriptionRef.get(capturedAfterSequence)).toBe(5);
       expect(yield* SubscriptionRef.get(loaderCalls)).toBe(0);
+    }),
+  );
+
+  it.effect("resumes a warm shell cache with its cached epoch", () =>
+    Effect.gen(function* () {
+      const cachedSnapshot: OrchestrationShellSnapshot = {
+        snapshotSequence: 5,
+        epoch: "cached-epoch",
+        projects: [],
+        threads: [],
+        updatedAt: "2026-06-06T00:00:00.000Z",
+      };
+      const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+      const capturedEpoch = yield* SubscriptionRef.make<string | undefined>(undefined);
+      const client = {
+        [ORCHESTRATION_WS_METHODS.subscribeShell]: (input: { readonly epoch?: string }) =>
+          Stream.unwrap(
+            SubscriptionRef.set(capturedEpoch, input.epoch).pipe(
+              Effect.as(Stream.fromQueue(events)),
+            ),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
+        Option.some(session(client)),
+      );
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: supervisorState,
+        session: activeSession,
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeed(Option.some(cachedSnapshot)),
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeed(Option.none()),
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeed(Option.none()),
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeed(Option.none()),
+        saveVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const snapshotLoader = ShellSnapshotLoader.of({
+        load: () => Effect.succeed(Option.none()),
+      });
+      yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader, snapshotLoader),
+      );
+
+      // The resume must carry the cached snapshot's epoch so the server can
+      // detect a DB reset/restore and serve a fresh snapshot instead of a
+      // cursor-based replay a warm client could never reconcile.
+      yield* SubscriptionRef.changes(capturedEpoch).pipe(
+        Stream.filter((value) => value !== undefined),
+        Stream.runHead,
+      );
+      expect(yield* SubscriptionRef.get(capturedEpoch)).toBe("cached-epoch");
+    }),
+  );
+
+  it.effect("adopts a fresh snapshot wholesale when the epoch changes", () =>
+    Effect.gen(function* () {
+      const cachedSnapshot: OrchestrationShellSnapshot = {
+        snapshotSequence: 5,
+        epoch: "cached-epoch",
+        projects: [],
+        threads: [],
+        updatedAt: "2026-06-06T00:00:00.000Z",
+      };
+      const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+      const client = {
+        [ORCHESTRATION_WS_METHODS.subscribeShell]: () => Stream.fromQueue(events),
+      } as unknown as WsRpcProtocolClient;
+      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
+        Option.some(session(client)),
+      );
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: supervisorState,
+        session: activeSession,
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeed(Option.some(cachedSnapshot)),
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeed(Option.none()),
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeed(Option.none()),
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeed(Option.none()),
+        saveVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const snapshotLoader = ShellSnapshotLoader.of({
+        load: () => Effect.succeed(Option.none()),
+      });
+      const shellState = yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader, snapshotLoader),
+      );
+
+      // The server DB was reset/restored: it serves a fresh snapshot under a NEW
+      // epoch with a lower sequence than the cached one. The reducer must adopt
+      // it wholesale, replacing the stale cached snapshot (never treating the
+      // lower sequence as stale).
+      const resetSnapshot: OrchestrationShellSnapshot = {
+        snapshotSequence: 1,
+        epoch: "new-epoch",
+        projects: [],
+        threads: [],
+        updatedAt: "2026-06-07T00:00:00.000Z",
+      };
+      yield* Queue.offer(events, { kind: "snapshot", snapshot: resetSnapshot });
+      yield* SubscriptionRef.changes(shellState).pipe(
+        Stream.filter(
+          (state) =>
+            state.status === "live" &&
+            Option.isSome(state.snapshot) &&
+            state.snapshot.value.epoch === "new-epoch",
+        ),
+        Stream.runHead,
+      );
+
+      const state = yield* SubscriptionRef.get(shellState);
+      expect(Option.getOrThrow(state.snapshot)).toEqual(resetSnapshot);
     }),
   );
 });

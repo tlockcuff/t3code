@@ -166,7 +166,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         payload: {
           threadId: "thread-1" as ThreadId,
           activity: {
-            kind: "task.progress",
+            kind: "assistant.text",
           },
         },
       } as unknown as OrchestrationEvent),
@@ -202,6 +202,43 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         },
       } as unknown as OrchestrationEvent),
     ).toBe(false);
+  });
+
+  it("publishes subagent task lifecycle events that drive the awareness phase", () => {
+    const now = "2026-05-25T00:00:00.000Z";
+    const base = {
+      sequence: 1,
+      eventId: "evt-1",
+      commandId: CommandId.make("cmd-1"),
+      aggregateKind: "thread",
+      aggregateId: "thread-1" as ThreadId,
+      occurredAt: now,
+    };
+
+    for (const kind of ["task.started", "task.progress", "task.completed"]) {
+      expect(
+        AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+          ...base,
+          type: "thread.activity-appended",
+          payload: {
+            threadId: "thread-1" as ThreadId,
+            activity: { kind },
+          },
+        } as unknown as OrchestrationEvent),
+      ).toBe(true);
+    }
+  });
+
+  it("suppresses no-op republishes for task.progress with unchanged derived state", () => {
+    // task.progress only advances updatedAt; the publish-identity dedupe ignores
+    // updatedAt, so repeated progress with the same derived phase yields the same
+    // identity and publishThreadUnsafe skips the republish.
+    const first = AgentAwarenessRelay.agentAwarenessPublishIdentity(state);
+    const afterProgress = AgentAwarenessRelay.agentAwarenessPublishIdentity({
+      ...state,
+      updatedAt: "2026-05-25T00:05:00.000Z",
+    });
+    expect(afterProgress).toBe(first);
   });
 
   it("deduplicates awareness state updates whose only change is their event timestamp", () => {
@@ -311,6 +348,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       hasPendingApprovals: false,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
+      hasRunningSubagents: false,
     } satisfies Omit<OrchestrationThreadShell, "id">;
 
     expect(
@@ -465,6 +503,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           hasPendingApprovals: false,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          hasRunningSubagents: false,
         } satisfies OrchestrationThreadShell;
 
         const orchestrationEngine = {
@@ -477,6 +516,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 1,
+              epoch: "test-epoch",
               projects: [project],
               threads: [thread],
               updatedAt: now,
@@ -621,6 +661,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           hasPendingApprovals: false,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          hasRunningSubagents: false,
         } satisfies OrchestrationThreadShell;
 
         const descriptor = {
@@ -666,6 +707,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             getShellSnapshot: () =>
               Effect.succeed({
                 snapshotSequence: 1,
+                epoch: "test-epoch",
                 projects: [project],
                 threads: [thread],
                 updatedAt: now,

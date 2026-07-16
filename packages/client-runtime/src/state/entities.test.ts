@@ -101,10 +101,12 @@ const THREAD_SHELL = {
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
+  hasRunningSubagents: false,
 } as const;
 
 const SNAPSHOT: OrchestrationShellSnapshot = {
   snapshotSequence: 1,
+  epoch: "test-epoch",
   updatedAt: "2026-06-01T00:00:00.000Z",
   projects: [
     {

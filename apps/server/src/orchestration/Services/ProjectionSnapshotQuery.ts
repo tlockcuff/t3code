@@ -36,6 +36,15 @@ export interface ProjectionSnapshotCounts {
 
 export interface ProjectionSnapshotSequence {
   readonly snapshotSequence: number;
+  /**
+   * The stable per-database epoch (migration 037). Included here so the resume
+   * path can cheaply verify a client's cached epoch against the server's
+   * without loading a full snapshot. Degrades to the wildcard ("*") for
+   * databases predating the epoch migration. Optional so callers/mocks that
+   * only care about the sequence may omit it; consumers treat a missing epoch
+   * as the wildcard.
+   */
+  readonly epoch?: string;
 }
 
 export interface ProjectionThreadCheckpointContext {

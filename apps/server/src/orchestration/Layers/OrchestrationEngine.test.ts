@@ -179,6 +179,7 @@ describe("OrchestrationEngine", () => {
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,
+              epoch: "test-epoch",
               projects: [],
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,
@@ -186,6 +187,7 @@ describe("OrchestrationEngine", () => {
           getArchivedShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,
+              epoch: "test-epoch",
               projects: [],
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,

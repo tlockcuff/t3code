@@ -4,12 +4,16 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  SNAPSHOT_EPOCH_WILDCARD,
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
@@ -30,8 +34,41 @@ import {
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
 
+// Exponential backoff for retrying transient expected failures on the thread
+// subscription. Starts at 250ms (matching the previous fixed retry) and doubles
+// up to a 5s cap so a persistently failing subscription no longer hammers the
+// server ~4x/s over cellular for the whole atom TTL.
+const THREAD_RETRY_BASE_DELAY_MS = 250;
+const THREAD_RETRY_MAX_DELAY_MS = 5_000;
+
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
+}
+
+/**
+ * A thread-not-found failure is terminal: the thread no longer exists on the
+ * server, so retrying the subscription can only re-fail forever. The subscribe
+ * handler raises this as `OrchestrationGetSnapshotError` with a "was not found"
+ * message (see the server's `subscribeThread` handler) — distinct from a
+ * transient snapshot/replay error, which uses a different message and should be
+ * retried with backoff.
+ */
+function isThreadNotFoundFailure(cause: Cause.Cause<unknown>): boolean {
+  return cause.reasons.some((reason) => {
+    if (!Cause.isFailReason(reason)) {
+      return false;
+    }
+    const error = reason.error;
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "_tag" in error &&
+      (error as { _tag: unknown })._tag === "OrchestrationGetSnapshotError" &&
+      "message" in error &&
+      typeof (error as { message: unknown }).message === "string" &&
+      (error as { message: string }).message.endsWith("was not found")
+    );
+  });
 }
 
 function formatThreadError(cause: Cause.Cause<unknown>): string {
@@ -70,6 +107,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // via `afterSequence` instead of re-downloading the full thread body.
   const lastSequence = yield* SubscriptionRef.make(
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
+  );
+  // Track the epoch the resume cursor belongs to. Sent on subscribe so the
+  // server can detect a DB reset/restore (new epoch) and serve a fresh snapshot
+  // instead of a cursor replay the client could never reconcile. Refreshed on
+  // every snapshot frame so a post-reset snapshot re-anchors the epoch.
+  const lastEpoch = yield* SubscriptionRef.make(
+    Option.match(cached, {
+      onNone: () => Option.none<string>(),
+      onSome: (snapshot) => Option.some(snapshot.epoch),
+    }),
   );
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
@@ -128,10 +175,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       status: "live",
       error: Option.none(),
     });
-    // Persist the thread together with the sequence it reflects so the next warm
-    // cache can resume from exactly here.
+    // Persist the thread together with the sequence AND epoch it reflects so the
+    // next warm cache can resume from exactly here — and so a later epoch check
+    // can detect a server reset/restore.
     const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-    yield* Queue.offer(persistence, { snapshotSequence, thread });
+    const epoch = yield* SubscriptionRef.get(lastEpoch);
+    yield* Queue.offer(persistence, {
+      snapshotSequence,
+      epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
+      thread,
+    });
   });
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
@@ -153,11 +206,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  // Load a fresh detail snapshot over HTTP, waiting for a prepared connection so
+  // the request can be authenticated (mirrors the socket path, which waits for a
+  // live session). Returns `Option.none()` when no snapshot can be established.
+  const loadColdSnapshot = Effect.fn("EnvironmentThreadState.loadColdSnapshot")(function* () {
+    const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
+      Stream.filter(Option.isSome),
+      Stream.map((current) => current.value),
+      Stream.runHead,
+    );
+    return Option.isSome(prepared)
+      ? yield* snapshotLoader.load(prepared.value, threadId)
+      : Option.none<OrchestrationThreadDetailSnapshot>();
+  });
+
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
     if (item.kind === "snapshot") {
+      // Advance the cursor first: `setThread` reads it to tag the persisted
+      // snapshot with the sequence it reflects. Re-anchor the epoch too: a fresh
+      // snapshot served after a server reset/restore carries the new epoch, and
+      // wholesale-replacing the thread discards the pre-reset cached state.
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
+      yield* SubscriptionRef.set(lastEpoch, Option.some(item.snapshot.epoch));
       yield* setThread(item.snapshot.thread);
       return;
     }
@@ -166,15 +238,35 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (item.event.sequence <= sequence) {
       return;
     }
-    yield* SubscriptionRef.set(lastSequence, item.event.sequence);
 
     const current = yield* SubscriptionRef.get(state);
     if (Option.isNone(current.data)) {
       if (item.event.type === "thread.deleted") {
+        yield* SubscriptionRef.set(lastSequence, item.event.sequence);
         yield* setDeleted();
+        return;
+      }
+      // A non-delete event arrived with no base thread data to apply it to.
+      // Do NOT advance the cursor: consuming-but-not-applying it would let a
+      // later resubscribe skip past it permanently (the previous code advanced
+      // the cursor unconditionally, dropping the event). Instead reload a fresh
+      // snapshot; applying it advances the cursor past this event, and any
+      // events replayed after it dedupe by sequence.
+      const reloaded = yield* loadColdSnapshot();
+      if (Option.isSome(reloaded)) {
+        // Advance the cursor first: `setThread` reads it to tag the persisted
+        // snapshot with the sequence it reflects.
+        yield* SubscriptionRef.set(lastSequence, reloaded.value.snapshotSequence);
+        yield* SubscriptionRef.set(lastEpoch, Option.some(reloaded.value.epoch));
+        yield* setThread(reloaded.value.thread);
       }
       return;
     }
+    // The event applies against real base data, so advance the cursor before
+    // reducing (`setThread` tags the persisted snapshot with this sequence). A
+    // "unchanged" result is still fully consumed — it just doesn't mutate this
+    // thread — so the cursor advances for it too.
+    yield* SubscriptionRef.set(lastSequence, item.event.sequence);
     const result = applyThreadDetailEvent(current.data.value, item.event);
     if (result.kind === "updated") {
       yield* setThread(result.thread);
@@ -197,6 +289,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
+  // A thread-not-found failure is terminal; firing this interrupts the whole
+  // subscription so the retry loop can never re-request a deleted thread.
+  const terminated = yield* Deferred.make<void>();
+  // Current backoff delay for retrying transient expected failures. Reset to the
+  // base whenever an item is successfully applied (the stream recovered).
+  const retryDelayMs = yield* Ref.make(THREAD_RETRY_BASE_DELAY_MS);
+
+  const handleExpectedFailure = (cause: Cause.Cause<unknown>) =>
+    Effect.gen(function* () {
+      if (isThreadNotFoundFailure(cause)) {
+        // The thread no longer exists: surface it as deleted/absent and stop
+        // retrying instead of hammering the server ~4x/s until the atom TTL.
+        yield* setDeleted();
+        yield* Deferred.succeed(terminated, undefined);
+        return;
+      }
+      yield* setStreamError(cause);
+      // Back off exponentially (capped) before the subscription is re-issued so
+      // a persistently transient failure does not retry forever at 250ms.
+      const delayMs = yield* Ref.get(retryDelayMs);
+      yield* Ref.set(retryDelayMs, Math.min(delayMs * 2, THREAD_RETRY_MAX_DELAY_MS));
+      yield* Effect.sleep(Duration.millis(delayMs));
+    });
+
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     Effect.gen(function* () {
@@ -209,21 +325,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       // If no base can be established we fall back to the socket-embedded
       // snapshot so the thread still synchronizes. Overlapping/replayed events
       // are deduped by sequence in applyItem.
-      const base = Option.isSome(cached)
-        ? cached
-        : yield* Effect.gen(function* () {
-            // Cold cache only: wait for a prepared connection so we can
-            // authenticate the HTTP request; this mirrors the socket path, which
-            // likewise waits for a live session.
-            const prepared = yield* SubscriptionRef.changes(supervisor.prepared).pipe(
-              Stream.filter(Option.isSome),
-              Stream.map((current) => current.value),
-              Stream.runHead,
-            );
-            return Option.isSome(prepared)
-              ? yield* snapshotLoader.load(prepared.value, threadId)
-              : Option.none<OrchestrationThreadDetailSnapshot>();
-          });
+      const base = Option.isSome(cached) ? cached : yield* loadColdSnapshot();
 
       if (Option.isSome(base)) {
         yield* applyItem({ kind: "snapshot", snapshot: base.value });
@@ -235,22 +337,48 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       // sequence we happened to start with.
       const subscribeInput = () => {
         const afterSequence = SubscriptionRef.getUnsafe(lastSequence);
-        return afterSequence > 0 ? { threadId, afterSequence } : { threadId };
+        if (afterSequence <= 0) {
+          return { threadId };
+        }
+        // Send the epoch the cursor belongs to so the server can detect a DB
+        // reset/restore and reply with a fresh snapshot instead of a doomed
+        // cursor replay.
+        return Option.match(SubscriptionRef.getUnsafe(lastEpoch), {
+          onNone: () => ({ threadId, afterSequence }),
+          onSome: (epoch) => ({ threadId, afterSequence, epoch }),
+        });
       };
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeThread, subscribeInput, {
-        onExpectedFailure: setStreamError,
-        retryExpectedFailureAfter: "250 millis",
-      }).pipe(Stream.runForEach(applyItem));
+        onExpectedFailure: handleExpectedFailure,
+        // The retry delay is applied inside `handleExpectedFailure` (exponential
+        // backoff), so the RPC layer re-subscribes immediately afterwards.
+        retryExpectedFailureAfter: "0 millis",
+      }).pipe(
+        // A recovered stream resets the backoff so the next transient blip
+        // starts fresh at the base delay.
+        Stream.tap(() => Ref.set(retryDelayMs, THREAD_RETRY_BASE_DELAY_MS)),
+        Stream.interruptWhen(Deferred.await(terminated)),
+        Stream.runForEach(applyItem),
+      );
     }),
   );
 
   yield* Effect.addFinalizer(() =>
-    Effect.all([SubscriptionRef.get(state), SubscriptionRef.get(lastSequence)]).pipe(
-      Effect.flatMap(([current, snapshotSequence]) =>
+    Effect.all([
+      SubscriptionRef.get(state),
+      SubscriptionRef.get(lastSequence),
+      SubscriptionRef.get(lastEpoch),
+    ]).pipe(
+      Effect.flatMap(([current, snapshotSequence, epoch]) =>
         Option.match(current.data, {
           onNone: () => Effect.void,
-          onSome: (thread) => persist({ snapshotSequence, thread }),
+          onSome: (thread) =>
+            persist({
+              snapshotSequence,
+              epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
+              thread,
+            }),
         }),
       ),
     ),

@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   EventId,
   ORCHESTRATION_WS_METHODS,
+  OrchestrationGetSnapshotError,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -101,6 +102,9 @@ function awaitThreadState(
 const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (options?: {
   readonly cached?: OrchestrationThread;
   readonly httpSnapshot?: Option.Option<OrchestrationThreadDetailSnapshot>;
+  // Per-call HTTP snapshot results (index by prior `loaderCalls`), so a test can
+  // return nothing on the initial cold load and a snapshot on a later reload.
+  readonly httpSnapshots?: ReadonlyArray<Option.Option<OrchestrationThreadDetailSnapshot>>;
 }) {
   const inputs = yield* Queue.unbounded<TestThreadInput>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -109,6 +113,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const subscriptionCount = yield* Ref.make(0);
   const loaderCalls = yield* Ref.make(0);
   const lastSubscribeAfterSequence = yield* Ref.make<number | undefined>(undefined);
+  const lastSubscribeEpoch = yield* Ref.make<string | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
@@ -121,10 +126,14 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       ),
     );
   const client = {
-    [ORCHESTRATION_WS_METHODS.subscribeThread]: (input: { readonly afterSequence?: number }) =>
+    [ORCHESTRATION_WS_METHODS.subscribeThread]: (input: {
+      readonly afterSequence?: number;
+      readonly epoch?: string;
+    }) =>
       Stream.unwrap(
         Ref.updateAndGet(subscriptionCount, (count) => count + 1).pipe(
           Effect.andThen(Ref.set(lastSubscribeAfterSequence, input.afterSequence)),
+          Effect.andThen(Ref.set(lastSubscribeEpoch, input.epoch)),
           Effect.as(streamFrom(inputs)),
         ),
       ),
@@ -137,10 +146,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   );
   const snapshotLoader = ThreadSnapshotLoader.of({
     load: (_prepared, threadId) =>
-      Ref.update(loaderCalls, (count) => count + 1).pipe(
-        Effect.as(
+      Ref.getAndUpdate(loaderCalls, (count) => count + 1).pipe(
+        Effect.map((callIndex) =>
           threadId === THREAD_ID
-            ? (options?.httpSnapshot ?? Option.none<OrchestrationThreadDetailSnapshot>())
+            ? (options?.httpSnapshots?.[callIndex] ??
+              options?.httpSnapshot ??
+              Option.none<OrchestrationThreadDetailSnapshot>())
             : Option.none<OrchestrationThreadDetailSnapshot>(),
         ),
       ),
@@ -162,6 +173,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
         threadId === THREAD_ID && options?.cached !== undefined
           ? Option.some({
               snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+              epoch: "test-epoch",
               thread: options.cached,
             })
           : Option.none(),
@@ -196,6 +208,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     subscriptionCount,
     loaderCalls,
     lastSubscribeAfterSequence,
+    lastSubscribeEpoch,
     supervisorState,
     supervisorSession,
     savedThreads,
@@ -208,6 +221,20 @@ const snapshot = (thread: OrchestrationThread): OrchestrationThreadStreamItem =>
   kind: "snapshot",
   snapshot: {
     snapshotSequence: 1,
+    epoch: "test-epoch",
+    thread,
+  },
+});
+
+const snapshotWithEpoch = (
+  thread: OrchestrationThread,
+  epoch: string,
+  snapshotSequence = 1,
+): OrchestrationThreadStreamItem => ({
+  kind: "snapshot",
+  snapshot: {
+    snapshotSequence,
+    epoch,
     thread,
   },
 });
@@ -286,6 +313,62 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("resumes a warm cache with its cached epoch", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD });
+
+      // Drive the subscription live so the resume input has been captured.
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", CACHED_SNAPSHOT_SEQUENCE + 1));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Live title",
+      );
+
+      // The cache carries epoch "test-epoch"; the resume must send it so the
+      // server can detect a DB reset/restore.
+      expect(yield* Ref.get(harness.lastSubscribeEpoch)).toBe("test-epoch");
+    }),
+  );
+
+  it.effect("discards cached state and adopts a fresh snapshot when the epoch changes", () =>
+    Effect.gen(function* () {
+      // Warm cache anchored at epoch "test-epoch" (see makeHarness cache).
+      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.data));
+
+      // The server DB was reset/restored: a fresh snapshot arrives under a NEW
+      // epoch with sequences restarted lower than the cached cursor. The reducer
+      // must wholesale-adopt it (discarding the stale cached thread) rather than
+      // treating the lower sequence as a replay to skip.
+      const resetThread: OrchestrationThread = { ...BASE_THREAD, title: "After reset" };
+      yield* Queue.offer(
+        harness.inputs,
+        snapshotWithEpoch(resetThread, "new-epoch", CACHED_SNAPSHOT_SEQUENCE - 5),
+      );
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "After reset",
+      );
+      expect(Option.getOrThrow(state.data)).toEqual(resetThread);
+
+      // The epoch is re-anchored: a reconnect resumes under the NEW epoch (and
+      // the post-reset sequence), never the stale cached epoch/cursor.
+      yield* harness.replaceSession;
+      yield* Ref.get(harness.subscriptionCount).pipe(
+        Effect.repeat({ until: (count) => count >= 2 }),
+      );
+      expect(yield* Ref.get(harness.lastSubscribeEpoch)).toBe("new-epoch");
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE - 5);
+    }),
+  );
+
   it.effect("resubscribes from the latest applied sequence, not the startup one", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD });
@@ -341,7 +424,7 @@ describe("EnvironmentThreads", () => {
     Effect.gen(function* () {
       const httpThread: OrchestrationThread = { ...BASE_THREAD, title: "HTTP title" };
       const harness = yield* makeHarness({
-        httpSnapshot: Option.some({ snapshotSequence: 1, thread: httpThread }),
+        httpSnapshot: Option.some({ snapshotSequence: 1, epoch: "test-epoch", thread: httpThread }),
       });
       // No socket snapshot is pushed; only a live event arrives over the socket.
       // It can only be applied if the HTTP snapshot already seeded the thread.
@@ -476,6 +559,98 @@ describe("EnvironmentThreads", () => {
       expect(Option.isNone(recovered.error)).toBe(true);
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.retryCount)).toBe(0);
+    }),
+  );
+
+  it.effect("treats a thread-not-found failure as terminal without retrying", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Queue.offer(
+        harness.inputs,
+        new OrchestrationGetSnapshotError({
+          message: `Thread ${THREAD_ID} was not found`,
+          cause: THREAD_ID,
+        }),
+      );
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "deleted",
+      );
+      expect(Option.isNone(state.data)).toBe(true);
+      expect(Option.isNone(state.error)).toBe(true);
+      expect(yield* Ref.get(harness.removedThreads)).toEqual([THREAD_ID]);
+
+      // The subscription must not re-issue after a terminal not-found, even when
+      // the backoff window elapses: retrying could only re-fail forever.
+      yield* TestClock.adjust("30 seconds");
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+    }),
+  );
+
+  it.effect("backs off exponentially between transient failures", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+
+      // First transient failure: retries after the 250ms base backoff.
+      yield* Queue.offer(harness.inputs, new Error("transient one"));
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.error));
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+
+      yield* TestClock.adjust("250 millis");
+      for (let index = 0; index < 100; index += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+
+      // Second transient failure: the backoff has doubled to 500ms, so 250ms is
+      // no longer enough to trigger the next re-subscription.
+      yield* Queue.offer(harness.inputs, new Error("transient two"));
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.error));
+
+      yield* TestClock.adjust("250 millis");
+      for (let index = 0; index < 20; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+
+      // The remaining 250ms of the doubled 500ms delay elapses the retry.
+      yield* TestClock.adjust("250 millis");
+      for (let index = 0; index < 100; index += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 3) break;
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(3);
+    }),
+  );
+
+  it.effect("reloads a fresh snapshot when a live event arrives with no base data", () =>
+    Effect.gen(function* () {
+      // Cold start: no cache and no initial HTTP snapshot, so there is no base
+      // thread data. A later reload (the second loader call) returns a snapshot.
+      const reloadedThread: OrchestrationThread = { ...BASE_THREAD, title: "Reloaded thread" };
+      const harness = yield* makeHarness({
+        httpSnapshots: [
+          Option.none(),
+          Option.some({ snapshotSequence: 5, epoch: "test-epoch", thread: reloadedThread }),
+        ],
+      });
+
+      // A non-delete live event arrives with no base data to apply it to. The
+      // fix must reload a snapshot instead of consuming-and-dropping the event.
+      yield* Queue.offer(harness.inputs, titleUpdated("Live title", 3));
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(state.data).title).toBe("Reloaded thread");
+      // Two loader calls: the initial cold load (none) and the reload (some).
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
     }),
   );
 

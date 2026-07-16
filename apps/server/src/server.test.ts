@@ -45,6 +45,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -200,7 +201,40 @@ const makeDefaultOrchestrationThreadShell = (
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    hasRunningSubagents: false,
     ...overrides,
+  };
+};
+
+const makeThreadMessageSentEvent = (input: {
+  sequence: number;
+  streaming: boolean;
+  threadId?: ThreadId;
+  text?: string;
+}): Extract<OrchestrationEvent, { type: "thread.message-sent" }> => {
+  const now = "2026-01-01T00:00:00.000Z";
+  const threadId = input.threadId ?? defaultThreadId;
+  return {
+    sequence: input.sequence,
+    eventId: EventId.make(`evt-${input.sequence}`),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: now,
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    type: "thread.message-sent",
+    payload: {
+      threadId,
+      messageId: MessageId.make(`message-${input.sequence}`),
+      role: "assistant",
+      text: input.text ?? "hello",
+      turnId: null,
+      streaming: input.streaming,
+      createdAt: now,
+      updatedAt: now,
+    },
   };
 };
 
@@ -717,6 +751,7 @@ const buildAppUnderTest = (options?: {
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 0,
+              epoch: "test-epoch",
               projects: [],
               threads: [],
               updatedAt: "1970-01-01T00:00:00.000Z",
@@ -724,6 +759,7 @@ const buildAppUnderTest = (options?: {
           getArchivedShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 0,
+              epoch: "test-epoch",
               projects: [],
               threads: [],
               updatedAt: "1970-01-01T00:00:00.000Z",
@@ -5649,6 +5685,437 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeShell snapshot path does not lose events published during the snapshot read",
+    () =>
+      Effect.gen(function* () {
+        // Gate the snapshot read so we can publish a live event *after* the
+        // subscription is established but *before* the snapshot DB read returns.
+        // The live subscription must be forked before the read; otherwise this
+        // event falls into the gap and is dropped.
+        const snapshotGate = yield* Deferred.make<void>();
+        const domainEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+        const midReadEvent = makeThreadMessageSentEvent({ sequence: 5, streaming: false });
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              streamDomainEvents: Stream.fromPubSub(domainEvents),
+            },
+            projectionSnapshotQuery: {
+              getShellSnapshot: () =>
+                Deferred.await(snapshotGate).pipe(
+                  Effect.as({
+                    snapshotSequence: 1,
+                    epoch: "test-epoch",
+                    projects: [],
+                    threads: [],
+                    updatedAt: "2026-01-01T00:00:00.000Z",
+                  }),
+                ),
+              getThreadShellById: () =>
+                Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              const collectFiber = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+                Stream.take(2),
+                Stream.runCollect,
+                Effect.forkChild,
+              );
+              // Give the server time to attach the live subscription (forked
+              // before the gated snapshot read), then publish the event that
+              // occurs during the read window and release the read.
+              yield* Effect.sleep(Duration.millis(100));
+              yield* PubSub.publish(domainEvents, midReadEvent);
+              yield* Effect.sleep(Duration.millis(50));
+              yield* Deferred.succeed(snapshotGate, undefined);
+              return yield* Fiber.join(collectFiber);
+            }),
+          ),
+        );
+
+        const [first, second] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(second?.kind, "thread-upserted");
+        assert.equal(second?.kind === "thread-upserted" ? second.sequence : -1, 5);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect(
+    "subscribeShell skips shell frames for streaming assistant deltas but emits on completion",
+    () =>
+      Effect.gen(function* () {
+        const shellReads: Array<string> = [];
+        const streamingDelta = makeThreadMessageSentEvent({ sequence: 10, streaming: true });
+        const completed = makeThreadMessageSentEvent({ sequence: 11, streaming: false });
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              streamDomainEvents: Stream.make(streamingDelta, completed),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: (threadId) =>
+                Effect.sync(() => {
+                  shellReads.push(threadId);
+                  return Option.some(makeDefaultOrchestrationThreadShell());
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+              Stream.take(2),
+              Stream.runCollect,
+            ),
+          ),
+        );
+
+        const [first, second] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        // Only the non-streaming completion produces a thread-upserted frame; the
+        // streaming delta is skipped, so getThreadShellById runs once, not twice.
+        assert.equal(second?.kind, "thread-upserted");
+        assert.equal(second?.kind === "thread-upserted" ? second.sequence : -1, 11);
+        assert.equal(shellReads.length, 1);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeShell afterSequence falls back to a snapshot frame above the replay threshold",
+    () =>
+      Effect.gen(function* () {
+        // Emit more catch-up events than the replay threshold so the server sends
+        // a fresh snapshot frame instead of replaying the whole tail.
+        const bigCatchUp = Stream.range(1, 2100).pipe(
+          Stream.map((sequence) => makeThreadMessageSentEvent({ sequence, streaming: false })),
+        );
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              readEvents: () => bigCatchUp,
+              streamDomainEvents: Stream.empty,
+            },
+            projectionSnapshotQuery: {
+              getShellSnapshot: () =>
+                Effect.succeed({
+                  snapshotSequence: 2100,
+                  epoch: "test-epoch",
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                }),
+              getThreadShellById: () =>
+                Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          ),
+        );
+
+        const [first] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.snapshotSequence : -1, 2100);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeShell afterSequence replays events when below the replay threshold", () =>
+    Effect.gen(function* () {
+      const smallCatchUp = Stream.make(
+        makeThreadMessageSentEvent({ sequence: 1, streaming: false }),
+        makeThreadMessageSentEvent({ sequence: 2, streaming: false }),
+      );
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: () => smallCatchUp,
+            streamDomainEvents: Stream.empty,
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: () =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      );
+
+      const [first, second] = Array.from(items);
+      // No snapshot frame: catch-up events are replayed directly.
+      assert.equal(first?.kind, "thread-upserted");
+      assert.equal(second?.kind, "thread-upserted");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeThread afterSequence falls back to a snapshot frame above the replay threshold",
+    () =>
+      Effect.gen(function* () {
+        const threadId = defaultThreadId;
+        const bigCatchUp = Stream.range(1, 2100).pipe(
+          Stream.map((sequence) =>
+            makeThreadMessageSentEvent({ sequence, streaming: true, threadId }),
+          ),
+        );
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              readEvents: () => bigCatchUp,
+              streamDomainEvents: Stream.empty,
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Effect.succeed(
+                  Option.some({
+                    snapshotSequence: 2100,
+                    epoch: "test-epoch",
+                    thread: makeDefaultOrchestrationReadModel().threads[0]!,
+                  }),
+                ),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId, afterSequence: 0 }).pipe(
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          ),
+        );
+
+        const [first] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.snapshotSequence : -1, 2100);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeThread snapshot path does not lose events published during the snapshot read",
+    () =>
+      Effect.gen(function* () {
+        const threadId = defaultThreadId;
+        const snapshotGate = yield* Deferred.make<void>();
+        const domainEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+        const midReadEvent = makeThreadMessageSentEvent({
+          sequence: 7,
+          streaming: false,
+          threadId,
+        });
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              streamDomainEvents: Stream.fromPubSub(domainEvents),
+            },
+            projectionSnapshotQuery: {
+              getThreadDetailSnapshot: () =>
+                Deferred.await(snapshotGate).pipe(
+                  Effect.as(
+                    Option.some({
+                      snapshotSequence: 1,
+                      epoch: "test-epoch",
+                      thread: makeDefaultOrchestrationReadModel().threads[0]!,
+                    }),
+                  ),
+                ),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              const collectFiber = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+                threadId,
+              }).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+              yield* Effect.sleep(Duration.millis(100));
+              yield* PubSub.publish(domainEvents, midReadEvent);
+              yield* Effect.sleep(Duration.millis(50));
+              yield* Deferred.succeed(snapshotGate, undefined);
+              return yield* Fiber.join(collectFiber);
+            }),
+          ),
+        );
+
+        const [first, second] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(second?.kind, "event");
+        assert.equal(second?.kind === "event" ? second.event.sequence : -1, 7);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect(
+    "subscribeShell serves a fresh snapshot when the resume epoch mismatches the server",
+    () =>
+      Effect.gen(function* () {
+        // A warm client resuming after a server DB reset/restore passes a stale
+        // epoch. The server must ignore the cursor and serve a fresh snapshot
+        // instead of a cursor-based replay the client could never reconcile.
+        let replayCalls = 0;
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              readEvents: () => {
+                replayCalls += 1;
+                return Stream.make(makeThreadMessageSentEvent({ sequence: 1, streaming: false }));
+              },
+              streamDomainEvents: Stream.empty,
+            },
+            projectionSnapshotQuery: {
+              getSnapshotSequence: () =>
+                Effect.succeed({ snapshotSequence: 3, epoch: "server-epoch" }),
+              getShellSnapshot: () =>
+                Effect.succeed({
+                  snapshotSequence: 3,
+                  epoch: "server-epoch",
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                }),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+              afterSequence: 0,
+              epoch: "client-epoch",
+            }).pipe(Stream.take(1), Stream.runCollect),
+          ),
+        );
+
+        const [first] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.snapshotSequence : -1, 3);
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.epoch : "", "server-epoch");
+        // The mismatched epoch short-circuits before any cursor replay.
+        assert.equal(replayCalls, 0);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeShell replays events when the resume epoch matches the server", () =>
+    Effect.gen(function* () {
+      // A concrete but matching epoch means the DB was not reset, so the
+      // cursor-based replay path runs exactly as before.
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            readEvents: () =>
+              Stream.make(makeThreadMessageSentEvent({ sequence: 1, streaming: false })),
+            streamDomainEvents: Stream.empty,
+          },
+          projectionSnapshotQuery: {
+            getSnapshotSequence: () =>
+              Effect.succeed({ snapshotSequence: 3, epoch: "server-epoch" }),
+            getThreadShellById: () =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+            epoch: "server-epoch",
+          }).pipe(Stream.take(1), Stream.runCollect),
+        ),
+      );
+
+      const [first] = Array.from(items);
+      // No snapshot frame: catch-up events are replayed directly.
+      assert.equal(first?.kind, "thread-upserted");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "subscribeThread serves a fresh snapshot when the resume epoch mismatches the server",
+    () =>
+      Effect.gen(function* () {
+        const threadId = defaultThreadId;
+        let replayCalls = 0;
+
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              readEvents: () => {
+                replayCalls += 1;
+                return Stream.make(
+                  makeThreadMessageSentEvent({ sequence: 1, streaming: false, threadId }),
+                );
+              },
+              streamDomainEvents: Stream.empty,
+            },
+            projectionSnapshotQuery: {
+              getSnapshotSequence: () =>
+                Effect.succeed({ snapshotSequence: 4, epoch: "server-epoch" }),
+              getThreadDetailSnapshot: () =>
+                Effect.succeed(
+                  Option.some({
+                    snapshotSequence: 4,
+                    epoch: "server-epoch",
+                    thread: makeDefaultOrchestrationReadModel().threads[0]!,
+                  }),
+                ),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+              threadId,
+              afterSequence: 0,
+              epoch: "client-epoch",
+            }).pipe(Stream.take(1), Stream.runCollect),
+          ),
+        );
+
+        const [first] = Array.from(items);
+        assert.equal(first?.kind, "snapshot");
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.snapshotSequence : -1, 4);
+        assert.equal(first?.kind === "snapshot" ? first.snapshot.epoch : "", "server-epoch");
+        assert.equal(replayCalls, 0);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("enriches replayed project events with repository identity metadata", () =>

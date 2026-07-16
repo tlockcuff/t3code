@@ -48,6 +48,8 @@ import Migration0032 from "./Migrations/032_AuthPairingProofKeyThumbprint.ts";
 import Migration0033 from "./Migrations/033_ProjectionContextUsageIndex.ts";
 import Migration0034 from "./Migrations/034_UsageLedger.ts";
 import Migration0035 from "./Migrations/035_PushDevices.ts";
+import Migration0036 from "./Migrations/036_ProjectionThreadHasRunningSubagents.ts";
+import Migration0037 from "./Migrations/037_ProjectionEpoch.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -95,6 +97,8 @@ export const migrationEntries = [
   [33, "ProjectionContextUsageIndex", Migration0033],
   [34, "UsageLedger", Migration0034],
   [35, "PushDevices", Migration0035],
+  [36, "ProjectionThreadHasRunningSubagents", Migration0036],
+  [37, "ProjectionEpoch", Migration0037],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

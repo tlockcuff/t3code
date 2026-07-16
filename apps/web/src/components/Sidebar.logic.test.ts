@@ -94,6 +94,7 @@ describe("hasUnseenCompletion", () => {
     expect(
       hasUnseenCompletion({
         hasActionableProposedPlan: false,
+        hasRunningSubagents: false,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
         interactionMode: "default",
@@ -108,6 +109,7 @@ describe("hasUnseenCompletion", () => {
     expect(
       hasUnseenCompletion({
         hasActionableProposedPlan: false,
+        hasRunningSubagents: false,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
         interactionMode: "default",
@@ -567,6 +569,7 @@ describe("isContextMenuPointerDown", () => {
 describe("resolveThreadStatusPill", () => {
   const baseThread = {
     hasActionableProposedPlan: false,
+    hasRunningSubagents: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
@@ -615,12 +618,29 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("shows working when the main session is idle but subagents are still running", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasRunningSubagents: true,
+          session: {
+            ...baseThread.session,
+            status: "ready",
+            activeTurnId: null,
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
+  });
+
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
           hasActionableProposedPlan: true,
+          hasRunningSubagents: false,
           latestTurn: makeLatestTurn(),
           session: {
             ...baseThread.session,

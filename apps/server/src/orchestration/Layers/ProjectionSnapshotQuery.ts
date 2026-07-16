@@ -14,6 +14,7 @@ import {
   OrchestrationThreadDetailSnapshot,
   PositiveInt,
   ProjectScript,
+  SNAPSHOT_EPOCH_WILDCARD,
   TurnId,
   type OrchestrationCheckpointSummary,
   type OrchestrationContextUsageThread,
@@ -134,6 +135,9 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   sourceProposedPlanId: Schema.NullOr(OrchestrationProposedPlanId),
 });
 const ProjectionStateDbRowSchema = ProjectionState;
+const ProjectionEpochRowSchema = Schema.Struct({
+  epoch: Schema.String,
+});
 const ProjectionCountsRowSchema = Schema.Struct({
   projectCount: Schema.Number,
   threadCount: Schema.Number,
@@ -368,6 +372,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          has_running_subagents AS "hasRunningSubagents",
           deleted_at AS "deletedAt"
         FROM projection_threads
         ORDER BY created_at ASC, thread_id ASC
@@ -396,6 +401,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          has_running_subagents AS "hasRunningSubagents",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE deleted_at IS NULL
@@ -426,6 +432,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          has_running_subagents AS "hasRunningSubagents",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE deleted_at IS NULL
@@ -688,6 +695,28 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const readEpochRow = SqlSchema.findOne({
+    Request: Schema.Void,
+    Result: ProjectionEpochRowSchema,
+    execute: () =>
+      sql`
+        SELECT epoch
+        FROM projection_epoch
+        WHERE id = 1
+        LIMIT 1
+      `,
+  });
+
+  // Read the per-database epoch minted by migration 037. It never changes for a
+  // given DB file, so any concrete value is safe to reuse. A missing row or read
+  // error (e.g. an unmigrated DB) degrades to the wildcard so epoch checks stay
+  // a no-op and never break resume for older databases.
+  const readEpoch: () => Effect.Effect<string, never> = () =>
+    readEpochRow(undefined).pipe(
+      Effect.map((row) => row.epoch),
+      Effect.catchCause(() => Effect.succeed(SNAPSHOT_EPOCH_WILDCARD)),
+    );
+
   const getActiveProjectRowByWorkspaceRoot = SqlSchema.findOneOption({
     Request: WorkspaceRootLookupInput,
     Result: ProjectionProjectLookupRowSchema,
@@ -788,6 +817,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pending_approval_count AS "pendingApprovalCount",
           pending_user_input_count AS "pendingUserInputCount",
           has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          has_running_subagents AS "hasRunningSubagents",
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE thread_id = ${threadId}
@@ -1519,8 +1549,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
             );
 
+            const epoch = yield* readEpoch();
             const snapshot = {
               snapshotSequence: computeSnapshotSequence(stateRows),
+              epoch,
               projects: Arr.filterMap(projectRows, (row) =>
                 row.deletedAt === null
                   ? Result.succeed(
@@ -1548,6 +1580,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                       hasPendingApprovals: row.pendingApprovalCount > 0,
                       hasPendingUserInput: row.pendingUserInputCount > 0,
                       hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+                      hasRunningSubagents: row.hasRunningSubagents > 0,
                     } satisfies OrchestrationThreadShell)
                   : Result.failVoid,
               ),
@@ -1654,8 +1687,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
             );
 
+            const epoch = yield* readEpoch();
             const snapshot = {
               snapshotSequence: computeSnapshotSequence(stateRows),
+              epoch,
               projects: Arr.filterMap(projectRows, (row) =>
                 row.deletedAt === null && activeProjectIds.has(row.projectId)
                   ? Result.succeed(
@@ -1682,6 +1717,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
+                  hasRunningSubagents: row.hasRunningSubagents > 0,
                 }),
               ),
               updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -1819,15 +1855,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
 
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
-    listProjectionStateRows(undefined).pipe(
-      Effect.mapError(
-        toPersistenceSqlOrDecodeError(
-          "ProjectionSnapshotQuery.getSnapshotSequence:query",
-          "ProjectionSnapshotQuery.getSnapshotSequence:decodeRows",
+    Effect.all({
+      stateRows: listProjectionStateRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getSnapshotSequence:query",
+            "ProjectionSnapshotQuery.getSnapshotSequence:decodeRows",
+          ),
         ),
       ),
-      Effect.map((stateRows) => ({
+      epoch: readEpoch(),
+    }).pipe(
+      Effect.map(({ stateRows, epoch }) => ({
         snapshotSequence: computeSnapshotSequence(stateRows),
+        epoch,
       })),
     );
 
@@ -2034,6 +2075,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
+        hasRunningSubagents: threadRow.value.hasRunningSubagents > 0,
       } satisfies OrchestrationThreadShell);
     });
 
@@ -2191,8 +2233,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
-          const { snapshotSequence } = yield* getSnapshotSequence();
-          return Option.some({ snapshotSequence, thread: thread.value });
+          const { snapshotSequence, epoch } = yield* getSnapshotSequence();
+          return Option.some({
+            snapshotSequence,
+            epoch: epoch ?? SNAPSHOT_EPOCH_WILDCARD,
+            thread: thread.value,
+          });
         }),
       )
       .pipe(

@@ -1536,6 +1536,52 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("refreshes the binding lastSeenAt when a turn completes", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+
+      const session = yield* provider.startSession(asThreadId("thread-refresh-last-seen"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-refresh-last-seen"),
+        runtimeMode: "full-access",
+      });
+
+      const readLastSeen = Effect.gen(function* () {
+        const bindings = yield* directory.listBindings();
+        const binding = bindings.find((entry) => entry.threadId === session.threadId);
+        assert.equal(binding !== undefined, true);
+        return Date.parse(binding!.lastSeenAt);
+      });
+
+      const initialLastSeen = yield* readLastSeen;
+
+      // Advance the (test) clock so a fresh upsert timestamp is strictly greater.
+      yield* advanceTestClock(60_000);
+
+      const completedEvent: LegacyProviderRuntimeEvent = {
+        type: "turn.completed",
+        eventId: asEventId("evt-refresh-last-seen"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: session.threadId,
+        turnId: asTurnId("turn-refresh"),
+        status: "completed",
+      };
+
+      fanout.codex.emit(completedEvent);
+      yield* advanceTestClock(50);
+
+      const refreshedLastSeen = yield* readLastSeen;
+      assert.equal(
+        refreshedLastSeen > initialLastSeen,
+        true,
+        "turn.completed should bump the binding lastSeenAt",
+      );
+    }),
+  );
+
   it.effect("fans out canonical runtime events in emission order", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

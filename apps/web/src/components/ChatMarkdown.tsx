@@ -635,6 +635,7 @@ interface SuspenseShikiCodeBlockProps {
   code: string;
   themeName: DiffThemeName;
   isStreaming: boolean;
+  streamingFallback: ReactNode;
 }
 
 function SuspenseShikiCodeBlock({
@@ -642,6 +643,7 @@ function SuspenseShikiCodeBlock({
   code,
   themeName,
   isStreaming,
+  streamingFallback,
 }: SuspenseShikiCodeBlockProps) {
   const language = extractFenceLanguage(className);
   const cacheKey = createHighlightCacheKey(code, language, themeName);
@@ -654,6 +656,16 @@ function SuspenseShikiCodeBlock({
         dangerouslySetInnerHTML={{ __html: cachedHighlightedHtml }}
       />
     );
+  }
+
+  // While the message is still streaming, an in-progress fence changes on every
+  // token. Highlighting it synchronously (and suspending on the highlighter
+  // promise) re-runs shiki over the whole block per token, which dominates the
+  // streaming cost. Render the raw code as plain text until streaming settles;
+  // the closed fence is then highlighted once (and cached) via the non-
+  // streaming path above.
+  if (isStreaming) {
+    return <>{streamingFallback}</>;
   }
 
   return (
@@ -1253,6 +1265,14 @@ function ChatMarkdown({
     serverConfig?.availableEditors ?? [],
   );
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  // Stabilize the file-link meta map identity across `text` changes. Streamed
+  // tokens re-scan the full text per token, but most tokens add plain prose and
+  // leave the resolved link set unchanged. Reusing the prior map reference in
+  // that case keeps downstream memos (`fileLinkParentSuffixByPath`,
+  // `markdownComponents`) referentially stable so they don't rebuild per token.
+  const markdownFileLinkMetaRef = useRef<
+    Map<string, NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>>
+  >(new Map());
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
@@ -1266,6 +1286,26 @@ function ChatMarkdown({
         metaByHref.set(normalizedHref, meta);
       }
     }
+    const previous = markdownFileLinkMetaRef.current;
+    if (
+      previous.size === metaByHref.size &&
+      [...metaByHref].every(([href, meta]) => {
+        const previousMeta = previous.get(href);
+        return (
+          previousMeta !== undefined &&
+          previousMeta.targetPath === meta.targetPath &&
+          previousMeta.filePath === meta.filePath &&
+          previousMeta.displayPath === meta.displayPath &&
+          previousMeta.workspaceRelativePath === meta.workspaceRelativePath &&
+          previousMeta.basename === meta.basename &&
+          previousMeta.line === meta.line &&
+          previousMeta.column === meta.column
+        );
+      })
+    ) {
+      return previous;
+    }
+    markdownFileLinkMetaRef.current = metaByHref;
     return metaByHref;
   }, [cwd, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
@@ -1326,6 +1366,12 @@ function ChatMarkdown({
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
   );
+  // Route `text` through a ref so the (large) components object below doesn't
+  // rebuild on every streamed token. The only consumer is `findTaskListMarkerOffset`,
+  // read lazily at render time inside the `li` renderer, so the ref always holds
+  // the current text.
+  const textRef = useRef(text);
+  textRef.current = text;
   const markdownComponents = useMemo<Components>(
     () => ({
       p({ node: _node, children, ...props }) {
@@ -1334,7 +1380,9 @@ function ChatMarkdown({
       li({ node, children, ...props }) {
         const listItemStart = node?.position?.start.offset;
         const markerOffset =
-          typeof listItemStart === "number" ? findTaskListMarkerOffset(text, listItemStart) : null;
+          typeof listItemStart === "number"
+            ? findTaskListMarkerOffset(textRef.current, listItemStart)
+            : null;
         return (
           <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
             {renderSkillInlineMarkdownChildren(children, skills)}
@@ -1512,6 +1560,7 @@ function ChatMarkdown({
                   code={codeBlock.code}
                   themeName={diffThemeName}
                   isStreaming={isStreaming}
+                  streamingFallback={<pre {...props}>{children}</pre>}
                 />
               </Suspense>
             </CodeHighlightErrorBoundary>
@@ -1530,7 +1579,6 @@ function ChatMarkdown({
       openMarkdownFileInPreview,
       resolvedTheme,
       skills,
-      text,
       threadRef,
     ],
   );

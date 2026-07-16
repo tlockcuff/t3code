@@ -4,6 +4,9 @@ import type { ServerProviderUsage } from "@t3tools/contracts";
 /** Aligns with provider snapshot refresh (~5 minutes). */
 export const USAGE_CACHE_TTL_MS = 5 * 60 * 1_000;
 
+/** Brief backoff after a non-rate-limit error so we retry sooner than the full TTL. */
+const USAGE_ERROR_BACKOFF_MS = 60_000;
+
 /** Keep a little headroom after a window reset before serving a cached meter. */
 const USAGE_RESET_CACHE_BUFFER_MS = 1_000;
 
@@ -12,12 +15,22 @@ type UsageCacheEntry = {
   readonly expiresAt: number;
 };
 
+/** Live TTL cache (what we serve while fresh). */
 const cache = new Map<string, UsageCacheEntry>();
+/**
+ * Last displayable snapshot per key. Survives `clearUsageCache()` so force
+ * refresh + rate-limit/error still keeps sidebar meters populated.
+ */
+const lastGood = new Map<string, ServerProviderUsage>();
 const inflight = new Map<string, Promise<ServerProviderUsage>>();
 
 function isRateLimitedUsage(usage: ServerProviderUsage): boolean {
   if (usage.status !== "error" || !usage.error) return false;
   return /rate[- ]?limit|429/i.test(usage.error);
+}
+
+function isDisplayableUsage(usage: ServerProviderUsage): boolean {
+  return usage.status === "ok" && usage.windows.length > 0;
 }
 
 function ttlMsForUsage(usage: ServerProviderUsage, nowMs: number, defaultTtlMs: number): number {
@@ -39,8 +52,8 @@ function ttlMsForUsage(usage: ServerProviderUsage, nowMs: number, defaultTtlMs: 
 /**
  * Cache provider usage fetches for a short TTL and coalesce concurrent callers.
  *
- * On a rate-limit error, returns the last successful (or previous) snapshot when
- * one exists so the UI keeps showing numbers instead of a hard failure.
+ * On fetch failure (rate-limit, network, 5xx, etc.), returns the last successful
+ * snapshot when one exists so the sidebar keeps showing meters instead of blanking.
  */
 export async function withUsageCache(
   key: string,
@@ -62,13 +75,35 @@ export async function withUsageCache(
     return pending;
   }
 
+  const previousOk = lastGood.get(key) ?? null;
+
   const promise = (async () => {
     try {
-      const value = await fetch();
-      if (isRateLimitedUsage(value) && cached) {
-        // Keep serving the previous snapshot and extend its TTL so we back off.
-        cache.set(key, { value: cached.value, expiresAt: nowMs + defaultTtlMs });
-        return cached.value;
+      let value: ServerProviderUsage;
+      try {
+        value = await fetch();
+      } catch (cause) {
+        // A rejecting fetch (network throw, timeout, etc.) must fall back to the
+        // last-good snapshot too — otherwise the rejection propagates to every
+        // coalesced awaiter and blanks the meters, contradicting the docstring.
+        if (previousOk) {
+          const backoffMs = Math.min(USAGE_ERROR_BACKOFF_MS, defaultTtlMs);
+          cache.set(key, { value: previousOk, expiresAt: nowMs + backoffMs });
+          return previousOk;
+        }
+        throw cause;
+      }
+      if (value.status === "error" && previousOk) {
+        // Keep serving the previous snapshot and back off before retrying.
+        // Rate limits use the full TTL; other transient errors retry sooner.
+        const backoffMs = isRateLimitedUsage(value)
+          ? defaultTtlMs
+          : Math.min(USAGE_ERROR_BACKOFF_MS, defaultTtlMs);
+        cache.set(key, { value: previousOk, expiresAt: nowMs + backoffMs });
+        return previousOk;
+      }
+      if (isDisplayableUsage(value)) {
+        lastGood.set(key, value);
       }
       const ttlMs = ttlMsForUsage(value, nowMs, defaultTtlMs);
       cache.set(key, { value, expiresAt: nowMs + ttlMs });
@@ -82,8 +117,22 @@ export async function withUsageCache(
   return promise;
 }
 
-/** Test helper — clears cached snapshots and in-flight fetches. */
+/**
+ * Force the next `withUsageCache` call for every key to refetch.
+ *
+ * Does not wipe last-good snapshots — a failed refetch still falls back so the
+ * UI does not blank on rate limits / transient errors.
+ */
 export function clearUsageCache(): void {
   cache.clear();
+  inflight.clear();
+}
+
+/**
+ * Full wipe including last-good snapshots. Test helper only.
+ */
+export function resetUsageCache(): void {
+  cache.clear();
+  lastGood.clear();
   inflight.clear();
 }

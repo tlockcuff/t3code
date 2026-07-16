@@ -40,6 +40,7 @@ function makeThread(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
+    hasRunningSubagents: false,
     ...input,
   };
 }
@@ -53,6 +54,7 @@ function makeSnapshot(
     environmentId: targetEnvironmentId,
     snapshot: {
       snapshotSequence: 1,
+      epoch: "test-epoch",
       projects,
       threads,
       updatedAt: "2026-06-04T00:00:00.000Z",

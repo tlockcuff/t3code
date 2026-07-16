@@ -465,6 +465,57 @@ describe("buildThreadFeed", () => {
       expanded: true,
     });
   });
+
+  it("reuses derived activity presentation for the same immutable activity object", () => {
+    function activityGroupActivities(feed: ReadonlyArray<ThreadFeedEntry>): ThreadFeedActivity[] {
+      return feed.flatMap((entry) =>
+        entry.type === "activity-group" ? [...entry.activities] : [],
+      );
+    }
+
+    const olderActivity = makeActivity({
+      id: EventId.make("activity-cache-old"),
+      kind: "runtime.warning",
+      summary: "Runtime warning",
+      createdAt: "2026-04-01T00:00:02.000Z",
+      turnId: TurnId.make("turn-1"),
+      payload: { message: "Old warning" },
+    });
+    const thread = makeThread({
+      id: ThreadId.make("thread-cache"),
+      projectId: ProjectId.make("project-1"),
+      title: "Cache thread",
+      activities: [olderActivity],
+    });
+
+    const first = activityGroupActivities(buildThreadFeed(thread));
+    const second = activityGroupActivities(buildThreadFeed(thread));
+    expect(first).toHaveLength(1);
+    // Same activity object -> identical derived entry identity across builds.
+    expect(second[0]).toBe(first[0]);
+
+    // A new streaming event appends an activity; prior entries keep their
+    // cached identity (only the new one is derived).
+    const streamed = buildThreadFeed(
+      makeThread({
+        ...thread,
+        activities: [
+          olderActivity,
+          makeActivity({
+            id: EventId.make("activity-cache-new"),
+            kind: "runtime.warning",
+            summary: "Runtime warning",
+            createdAt: "2026-04-01T00:00:03.000Z",
+            turnId: TurnId.make("turn-1"),
+            payload: { message: "New warning" },
+          }),
+        ],
+      }),
+    );
+    const streamedActivities = activityGroupActivities(streamed);
+    const reusedOld = streamedActivities.find((activity) => activity.id === "activity-cache-old");
+    expect(reusedOld).toBe(first[0]);
+  });
 });
 
 describe("subagent activities", () => {

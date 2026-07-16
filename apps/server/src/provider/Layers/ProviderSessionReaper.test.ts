@@ -104,6 +104,7 @@ function makeReadModel(
       hasPendingApprovals: false,
       hasPendingUserInput: false,
       hasActionableProposedPlan: false,
+      hasRunningSubagents: false,
       latestTurn: null,
       messages: [],
       session: thread.session,
@@ -138,6 +139,7 @@ describe("ProviderSessionReaper", () => {
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
+    readonly getThreadShellByIdActiveTurnByCall?: ReadonlyArray<TurnId | null>;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
@@ -204,12 +206,24 @@ describe("ProviderSessionReaper", () => {
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
-          getThreadShellById: (threadId) =>
-            Effect.succeed(
-              input.readModel.threads.find((thread) => thread.id === threadId)
-                ? Option.some(input.readModel.threads.find((thread) => thread.id === threadId)!)
-                : Option.none(),
-            ),
+          getThreadShellById: (() => {
+            let call = -1;
+            return (threadId: ThreadId) => {
+              call += 1;
+              const base = input.readModel.threads.find((thread) => thread.id === threadId);
+              if (!base) return Effect.succeed(Option.none());
+              const override = input.getThreadShellByIdActiveTurnByCall;
+              if (override && call < override.length && base.session) {
+                return Effect.succeed(
+                  Option.some({
+                    ...base,
+                    session: { ...base.session, activeTurnId: override[call]! },
+                  }),
+                );
+              }
+              return Effect.succeed(Option.some(base));
+            };
+          })(),
           getThreadDetailById: () => Effect.die("unused"),
           getThreadDetailSnapshot: () => Effect.die("unused"),
         }),
@@ -306,6 +320,57 @@ describe("ProviderSessionReaper", () => {
         resumeCursor: {
           opaque: "resume-active-turn",
         },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(drainFibers);
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("skips reaping when a turn starts between the initial check and stop (race re-check)", async () => {
+    const threadId = ThreadId.make("thread-reaper-race-turn");
+    const turnId = TurnId.make("turn-reaper-race");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+      // First check (idle gate) sees no active turn; the re-check just before
+      // stop sees a freshly-started turn and must skip.
+      getThreadShellByIdActiveTurnByCall: [null, turnId],
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: { opaque: "resume-race" },
         runtimePayload: null,
       }),
     );

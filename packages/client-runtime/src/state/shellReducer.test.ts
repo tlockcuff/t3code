@@ -7,6 +7,7 @@ import { applyShellStreamEvent } from "./shellReducer.ts";
 
 const baseSnapshot: OrchestrationShellSnapshot = {
   snapshotSequence: 0,
+  epoch: "test-epoch",
   projects: [],
   threads: [],
   updatedAt: "2026-04-01T00:00:00.000Z",
@@ -40,6 +41,7 @@ const stubThread = {
   hasPendingApprovals: false,
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
+  hasRunningSubagents: false,
   session: null,
 } as const;
 

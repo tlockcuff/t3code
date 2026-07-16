@@ -182,14 +182,25 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       // re-issued on every new session, and resuming from the startup sequence
       // would re-request events we already hold while risking a silent gap if
       // the server has since compacted past it.
+      // Resume with the cached snapshot's epoch alongside its sequence. If the
+      // server DB was reset/restored (new epoch), the server ignores the cursor
+      // and replies with a fresh snapshot frame, which applyItem adopts wholesale
+      // — so a warm client never freezes on a restarted sequence.
       const subscribeInput = () =>
         Option.match(SubscriptionRef.getUnsafe(state).snapshot, {
           onNone: () => ({}),
-          onSome: (snapshot) => ({ afterSequence: snapshot.snapshotSequence }),
+          onSome: (snapshot) => ({
+            afterSequence: snapshot.snapshotSequence,
+            epoch: snapshot.epoch,
+          }),
         });
 
       yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeShell, subscribeInput, {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),
+        // Without a retry the stream ends after a single expected failure, so
+        // one transient snapshot error would kill sidebar sync for the rest of
+        // the socket session. Mirror the thread path and re-subscribe.
+        retryExpectedFailureAfter: "250 millis",
       }).pipe(Stream.runForEach(applyItem));
     }),
   );

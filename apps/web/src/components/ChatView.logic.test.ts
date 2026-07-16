@@ -7,13 +7,16 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   buildThreadTurnInterruptInput,
+  canRestoreComposerDraftAfterSendFailure,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  resolveDisplayedThreadError,
   resolveSendEnvMode,
+  shouldRemoveOptimisticMessageOnSendFailure,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -247,6 +250,49 @@ describe("getStartedThreadModelChangeBlockReason", () => {
   });
 });
 
+describe("send failure recovery", () => {
+  const emptyComposer = {
+    promptLength: 0,
+    imageCount: 0,
+    terminalContextCount: 0,
+    elementContextCount: 0,
+    previewAnnotationCount: 0,
+    reviewCommentCount: 0,
+  };
+
+  it("always removes the optimistic message on send failure", () => {
+    expect(shouldRemoveOptimisticMessageOnSendFailure()).toBe(true);
+  });
+
+  it("restores the failed draft only when the composer is still empty", () => {
+    expect(canRestoreComposerDraftAfterSendFailure(emptyComposer)).toBe(true);
+  });
+
+  it("does NOT restore the failed draft when the user typed during the send", () => {
+    expect(canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, promptLength: 3 })).toBe(
+      false,
+    );
+  });
+
+  it("does NOT restore when any other composer content is present", () => {
+    expect(canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, imageCount: 1 })).toBe(
+      false,
+    );
+    expect(
+      canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, terminalContextCount: 1 }),
+    ).toBe(false);
+    expect(
+      canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, elementContextCount: 1 }),
+    ).toBe(false);
+    expect(
+      canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, previewAnnotationCount: 1 }),
+    ).toBe(false);
+    expect(
+      canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, reviewCommentCount: 1 }),
+    ).toBe(false);
+  });
+});
+
 describe("resolveSendEnvMode", () => {
   it("keeps worktree mode only for git repositories", () => {
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true })).toBe("worktree");
@@ -345,6 +391,45 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
         targetThreadId: threadId,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveDisplayedThreadError", () => {
+  it("prefers local errors over server lastError", () => {
+    expect(
+      resolveDisplayedThreadError({
+        localError: "Local failure",
+        serverLastError: "Server failure",
+        dismissedServerError: null,
+      }),
+    ).toBe("Local failure");
+  });
+
+  it("suppresses a dismissed server lastError until it changes", () => {
+    expect(
+      resolveDisplayedThreadError({
+        localError: null,
+        serverLastError: "Sticky server error",
+        dismissedServerError: "Sticky server error",
+      }),
+    ).toBeNull();
+    expect(
+      resolveDisplayedThreadError({
+        localError: null,
+        serverLastError: "A different error",
+        dismissedServerError: "Sticky server error",
+      }),
+    ).toBe("A different error");
+  });
+
+  it("returns null when neither local nor server error is present", () => {
+    expect(
+      resolveDisplayedThreadError({
+        localError: null,
+        serverLastError: null,
+        dismissedServerError: null,
+      }),
+    ).toBeNull();
   });
 });
 

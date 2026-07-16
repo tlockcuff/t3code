@@ -123,6 +123,18 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
 }
 
+function extractActivityTaskId(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const taskId = (payload as Record<string, unknown>).taskId;
+  if (typeof taskId !== "string") {
+    return null;
+  }
+  const trimmed = taskId.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   if (detail === null) {
     return false;
@@ -205,6 +217,111 @@ function deriveHasActionableProposedPlan(input: {
 
   const latestPlan = sorted.at(-1) ?? null;
   return latestPlan !== null && latestPlan.implementedAt === null;
+}
+
+/**
+ * Order activities the same way the client (`compareActivitiesByOrder`) and all
+ * DB read paths do: runtime `sequence` first when present, then `createdAt`,
+ * then `activityId`. Sorting by `createdAt` alone diverges from those orderings
+ * whenever two task activities share a timestamp but differ in sequence.
+ */
+function compareActivitiesForDerivation(
+  left: {
+    readonly sequence?: number | undefined;
+    readonly createdAt: string;
+    readonly activityId: string;
+  },
+  right: {
+    readonly sequence?: number | undefined;
+    readonly createdAt: string;
+    readonly activityId: string;
+  },
+): number {
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    if (left.sequence !== right.sequence) {
+      return left.sequence - right.sequence;
+    }
+  } else if (left.sequence !== undefined) {
+    return 1;
+  } else if (right.sequence !== undefined) {
+    return -1;
+  }
+
+  return (
+    left.createdAt.localeCompare(right.createdAt) || left.activityId.localeCompare(right.activityId)
+  );
+}
+
+/**
+ * Activity kinds that feed the thread shell summary: task.* drives
+ * `hasRunningSubagents`, user-input.* drives `pendingUserInputCount`, and
+ * approval.* / the provider respond-failed kinds drive `pendingApprovalCount`
+ * (via the pending-approvals projector rows the summary reads). Any other
+ * appended activity leaves the summary unchanged, so the refresh can be skipped.
+ */
+function activityKindAffectsThreadShellSummary(kind: string): boolean {
+  return (
+    kind.startsWith("task.") ||
+    kind.startsWith("user-input.") ||
+    kind.startsWith("approval.") ||
+    kind === "provider.approval.respond.failed" ||
+    kind === "provider.user-input.respond.failed"
+  );
+}
+
+/**
+ * Whether an event can move any thread-shell-summary field. Used to skip the
+ * O(thread history) recomputation for events that provably cannot.
+ */
+function eventCanChangeThreadShellSummary(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.message-sent":
+      // Only user messages feed latestUserMessageAt; assistant/streaming
+      // deltas never move a summary field.
+      return event.payload.role === "user";
+    case "thread.activity-appended":
+      return activityKindAffectsThreadShellSummary(event.payload.activity.kind);
+    default:
+      return true;
+  }
+}
+
+/**
+ * True while any subagent task is open: started/progress without a later completed.
+ * Mirrors client `deriveSubagentStates` open-task semantics for shell summary.
+ */
+export function deriveHasRunningSubagentsFromActivities(
+  activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly payload: unknown;
+    readonly createdAt: string;
+    readonly activityId: string;
+    readonly sequence?: number | undefined;
+  }>,
+): boolean {
+  const openTaskIds = new Set<string>();
+  const ordered = [...activities].toSorted(compareActivitiesForDerivation);
+
+  for (const activity of ordered) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+    const taskId = extractActivityTaskId(activity.payload);
+    if (taskId === null) {
+      continue;
+    }
+    if (activity.kind === "task.completed") {
+      openTaskIds.delete(taskId);
+    } else {
+      openTaskIds.add(taskId);
+    }
+  }
+
+  return openTaskIds.size > 0;
 }
 
 function retainProjectionMessagesAfterRevert(
@@ -550,6 +667,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
+      // When the session leaves the "running" status (interrupt / provider
+      // crash / server death), force open subagent tasks settled. task.completed
+      // is the only activity that clears them, and it is emitted solely by the
+      // provider's task_notification — none of the failure paths emit it, so
+      // without this the thread would read "running" forever.
+      options?: { readonly settleRunningSubagents?: boolean },
     ) {
       const existingRow = yield* projectionThreadRepository.getById({
         threadId,
@@ -583,6 +706,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
       });
+      const hasRunningSubagents =
+        options?.settleRunningSubagents === true
+          ? false
+          : deriveHasRunningSubagentsFromActivities(activities);
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
@@ -590,6 +717,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         pendingApprovalCount,
         pendingUserInputCount,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
+        hasRunningSubagents: hasRunningSubagents ? 1 : 0,
       });
     });
 
@@ -615,6 +743,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
+            hasRunningSubagents: 0,
             deletedAt: null,
           });
           return;
@@ -732,7 +861,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          // The shell summary is a pure function of user messages, pending
+          // approvals, proposed plans, and task/user-input activities. Skip the
+          // full O(thread history) recomputation for events that provably can
+          // not move any of those fields — streaming assistant deltas and
+          // activity kinds outside the summary's inputs.
+          if (eventCanChangeThreadShellSummary(event)) {
+            yield* refreshThreadShellSummary(event.payload.threadId);
+          }
           return;
         }
 
@@ -748,7 +884,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.session.activeTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          // A session that is no longer "running" cannot have live subagents,
+          // regardless of whether the provider emitted task.completed. Settle
+          // open tasks so interrupt/crash/death paths don't stick "running".
+          // "starting"/"running" are excluded so an idle-but-alive session
+          // between turns still surfaces genuine background subagent output.
+          yield* refreshThreadShellSummary(event.payload.threadId, {
+            settleRunningSubagents:
+              settledTurnStateForSessionStatus(event.payload.session.status) !== null,
+          });
           return;
         }
 
@@ -816,6 +960,46 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, attachmentSideEffects) {
       switch (event.type) {
         case "thread.message-sent": {
+          // Fast path for streaming deltas: append the delta to the existing
+          // row in-place instead of reading the whole accumulated text back,
+          // concatenating in JS, and rewriting it. That read+rewrite is
+          // O(accumulated length) per delta — O(n^2) over a message. The
+          // append UPDATE ... RETURNING is O(delta) and also tells us whether
+          // a row existed; only when it did not do we fall through to insert.
+          // Only taken when the delta carries no attachments (the common case);
+          // attachment-bearing writes keep the full upsert path below.
+          if (event.payload.streaming && event.payload.attachments === undefined) {
+            const updated = yield* sql`
+              UPDATE projection_thread_messages
+              SET
+                text = text || ${event.payload.text},
+                turn_id = ${event.payload.turnId},
+                role = ${event.payload.role},
+                is_streaming = 1,
+                updated_at = ${event.payload.updatedAt}
+              WHERE message_id = ${event.payload.messageId}
+              RETURNING message_id
+            `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.appendStreamingDelta:query"),
+              ),
+            );
+            if (updated.length > 0) {
+              return;
+            }
+            yield* projectionThreadMessageRepository.upsert({
+              messageId: event.payload.messageId,
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnId,
+              role: event.payload.role,
+              text: event.payload.text,
+              isStreaming: true,
+              createdAt: event.payload.createdAt,
+              updatedAt: event.payload.updatedAt,
+            });
+            return;
+          }
+
           const existingMessage = yield* projectionThreadMessageRepository.getByMessageId({
             messageId: event.payload.messageId,
           });
@@ -1514,6 +1698,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
+    // Apply one projector and advance its checkpoint row, WITHOUT opening a
+    // transaction — the caller owns the transaction boundary. Attachment
+    // side-effects are accumulated into the shared collector and flushed once,
+    // after the transaction commits.
+    const applyProjectorWithState = (
+      projector: ProjectorDefinition,
+      event: OrchestrationEvent,
+      attachmentSideEffects: AttachmentSideEffects,
+    ) =>
+      projector.apply(event, attachmentSideEffects).pipe(
+        Effect.flatMap(() =>
+          projectionStateRepository.upsert({
+            projector: projector.name,
+            lastAppliedSequence: event.sequence,
+            updatedAt: event.occurredAt,
+          }),
+        ),
+      );
+
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
@@ -1523,17 +1726,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         prunedThreadRelativePaths: new Map<string, Set<string>>(),
       };
 
-      yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
-          Effect.flatMap(() =>
-            projectionStateRepository.upsert({
-              projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
-            }),
-          ),
-        ),
-      );
+      yield* sql.withTransaction(applyProjectorWithState(projector, event, attachmentSideEffects));
 
       yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
@@ -1563,10 +1756,40 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ),
         );
 
+    // Live projection: run every projector for a single event inside ONE
+    // transaction (one fsync for all 9 projectors + their checkpoint rows)
+    // instead of one transaction per projector. Per-projector checkpoint rows
+    // still advance atomically together, so recovery semantics are unchanged —
+    // each projector can still resume from its own sequence on bootstrap.
+    const runEventForAllProjectors = Effect.fn("runEventForAllProjectors")(function* (
+      event: OrchestrationEvent,
+    ) {
+      const attachmentSideEffects: AttachmentSideEffects = {
+        deletedThreadIds: new Set<string>(),
+        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+      };
+
+      yield* sql.withTransaction(
+        Effect.forEach(
+          projectors,
+          (projector) => applyProjectorWithState(projector, event, attachmentSideEffects),
+          { concurrency: 1, discard: true },
+        ),
+      );
+
+      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to apply projected attachment side-effects", {
+            sequence: event.sequence,
+            eventType: event.type,
+            cause,
+          }),
+        ),
+      );
+    });
+
     const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
+      runEventForAllProjectors(event).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),

@@ -219,9 +219,11 @@ import {
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   buildThreadTurnInterruptInput,
+  canRestoreComposerDraftAfterSendFailure,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  shouldRemoveOptimisticMessageOnSendFailure,
   hasServerAcknowledgedLocalDispatch,
   getStartedThreadModelChangeBlockReason,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -232,6 +234,7 @@ import {
   deriveLockedProvider,
   readFileAsDataUrl,
   reconcileMountedTerminalThreadIds,
+  resolveDisplayedThreadError,
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
@@ -1111,6 +1114,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [localServerErrorsByThreadKey, setLocalServerErrorsByThreadKey] = useState<
     Record<string, string | null>
   >({});
+  /** Suppresses sticky server session.lastError after the user dismisses the banner. */
+  const [dismissedServerErrorsByThreadKey, setDismissedServerErrorsByThreadKey] = useState<
+    Record<string, string | null>
+  >({});
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [maximizedRightPanelThreadKey, setMaximizedRightPanelThreadKey] = useState<string | null>(
@@ -1226,6 +1233,7 @@ function ChatViewContent(props: ChatViewProps) {
       ? null
       : ((draftId ? localDraftErrorsByDraftId[draftId] : null) ?? null);
   const localServerError = localServerErrorsByThreadKey[routeThreadKey] ?? null;
+  const dismissedServerError = dismissedServerErrorsByThreadKey[routeThreadKey] ?? null;
   const localDraftThread = useMemo(
     () =>
       draftThread
@@ -1243,7 +1251,11 @@ function ChatViewContent(props: ChatViewProps) {
   const isServerThread = routeKind === "server" && serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const threadError = isServerThread
-    ? (localServerError ?? serverThread?.session?.lastError ?? null)
+    ? resolveDisplayedThreadError({
+        localError: localServerError,
+        serverLastError: serverThread?.session?.lastError,
+        dismissedServerError,
+      })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -1285,9 +1297,13 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return labels;
   }, [activeThreadKnownSessions]);
+  const activeThreadEnvironmentId = activeThread?.environmentId ?? null;
   const activeThreadRef = useMemo(
-    () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
-    [activeThread],
+    () =>
+      activeThreadEnvironmentId && activeThreadId
+        ? scopeThreadRef(activeThreadEnvironmentId, activeThreadId)
+        : null,
+    [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const [timelineAnchor, setTimelineAnchor] = useState<{
@@ -1343,18 +1359,24 @@ function ChatViewContent(props: ChatViewProps) {
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const sourcePlanThreadRef = useMemo(() => {
     const sourceThreadId = activeLatestTurn?.sourceProposedPlan?.threadId;
-    if (!activeThread || !sourceThreadId || sourceThreadId === activeThread.id) {
+    if (
+      !activeThreadEnvironmentId ||
+      !activeThreadId ||
+      !sourceThreadId ||
+      sourceThreadId === activeThreadId
+    ) {
       return null;
     }
-    return scopeThreadRef(activeThread.environmentId, sourceThreadId);
-  }, [activeLatestTurn?.sourceProposedPlan?.threadId, activeThread]);
+    return scopeThreadRef(activeThreadEnvironmentId, sourceThreadId);
+  }, [activeLatestTurn?.sourceProposedPlan?.threadId, activeThreadEnvironmentId, activeThreadId]);
   const sourceThreadProposedPlans = useThreadProposedPlans(sourcePlanThreadRef);
+  const activeThreadProposedPlans = activeThread?.proposedPlans;
   const threadPlanCatalog = useMemo<ThreadPlanCatalogEntry[]>(() => {
-    if (!activeThread) {
+    if (!activeThreadId || !activeThreadProposedPlans) {
       return [];
     }
     const entries: ThreadPlanCatalogEntry[] = [
-      { id: activeThread.id, proposedPlans: activeThread.proposedPlans },
+      { id: activeThreadId, proposedPlans: activeThreadProposedPlans },
     ];
     if (sourcePlanThreadRef) {
       entries.push({
@@ -1363,7 +1385,7 @@ function ChatViewContent(props: ChatViewProps) {
       });
     }
     return entries;
-  }, [activeThread, sourcePlanThreadRef, sourceThreadProposedPlans]);
+  }, [activeThreadId, activeThreadProposedPlans, sourcePlanThreadRef, sourceThreadProposedPlans]);
   useEffect(() => {
     setMountedTerminalThreadKeys((currentThreadIds) => {
       const nextThreadIds = reconcileMountedTerminalThreadIds({
@@ -1896,6 +1918,13 @@ function ChatViewContent(props: ChatViewProps) {
     });
   }, []);
   const serverMessages = activeThread?.messages;
+  // Stabilize the attachment id list across `serverMessages` changes. Streamed
+  // tokens mint a fresh `messages` array (and message objects) per token, but
+  // the set of attachment ids is unchanged for most turns. Reuse the prior
+  // array identity when the ids are equal so downstream memos
+  // (`serverAttachmentResources`, `serverAttachmentUrlById`,
+  // `displayServerMessages`) don't recompute per token.
+  const serverAttachmentIdsRef = useRef<string[]>([]);
   const serverAttachmentIds = useMemo(() => {
     const attachmentIds = new Set<string>();
     for (const message of serverMessages ?? []) {
@@ -1903,7 +1932,16 @@ function ChatViewContent(props: ChatViewProps) {
         attachmentIds.add(attachment.id);
       }
     }
-    return [...attachmentIds];
+    const nextAttachmentIds = [...attachmentIds];
+    const previousAttachmentIds = serverAttachmentIdsRef.current;
+    if (
+      previousAttachmentIds.length === nextAttachmentIds.length &&
+      previousAttachmentIds.every((id, index) => id === nextAttachmentIds[index])
+    ) {
+      return previousAttachmentIds;
+    }
+    serverAttachmentIdsRef.current = nextAttachmentIds;
+    return nextAttachmentIds;
   }, [serverMessages]);
   const serverAttachmentResources = useMemo(
     () =>
@@ -1924,19 +1962,41 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [serverAttachmentIds, serverAttachmentUrls],
   );
+  // Structurally share the display messages so a streamed token (which mints a
+  // fresh `messages` array + a new object for the changed message only) doesn't
+  // force every attachment-bearing message to be re-spread. Reuse the prior
+  // display object when both the source message identity and the resolved
+  // preview urls are unchanged, preserving referential equality for the
+  // timeline row memo. The cache is keyed by source-message identity and reset
+  // whenever the resolved url map changes reference.
+  const displayServerMessageCacheRef = useRef<{
+    urlById: ReadonlyMap<string, string>;
+    bySourceMessage: WeakMap<ChatMessage, ChatMessage>;
+  }>({ urlById: serverAttachmentUrlById, bySourceMessage: new WeakMap() });
   const displayServerMessages = useMemo<ReadonlyArray<ChatMessage>>(() => {
     if (!serverMessages) return [];
+    let cache = displayServerMessageCacheRef.current;
+    if (cache.urlById !== serverAttachmentUrlById) {
+      cache = { urlById: serverAttachmentUrlById, bySourceMessage: new WeakMap() };
+      displayServerMessageCacheRef.current = cache;
+    }
     return serverMessages.map((message) => {
       if (!message.attachments || message.attachments.length === 0) {
         return message;
       }
-      return {
+      const cached = cache.bySourceMessage.get(message);
+      if (cached) {
+        return cached;
+      }
+      const display: ChatMessage = {
         ...message,
         attachments: message.attachments.map((attachment) => {
           const previewUrl = serverAttachmentUrlById.get(attachment.id);
           return previewUrl ? { ...attachment, previewUrl } : attachment;
         }),
       };
+      cache.bySourceMessage.set(message, display);
+      return display;
     });
   }, [serverAttachmentUrlById, serverMessages]);
   useEffect(() => {
@@ -3909,7 +3969,7 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSendImpl = async (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     if (
       !activeThread ||
@@ -4223,16 +4283,12 @@ function ChatViewContent(props: ChatViewProps) {
     }
 
     if (failure !== null) {
-      if (
-        promptRef.current.length === 0 &&
-        composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0 &&
-        composerElementContextsRef.current.length === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.previewAnnotations
-          .length ?? 0) === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-          .length ?? 0) === 0
-      ) {
+      // Always remove the optimistic bubble on failure: the server never
+      // accepted this turn, so leaving it rendered (as the old
+      // composer-empty-only guard did) strands a phantom message whenever the
+      // user typed during the in-flight send. Draft restoration is handled
+      // independently below so the failed text stays recoverable.
+      if (shouldRemoveOptimisticMessageOnSendFailure()) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
           for (const message of removed) {
@@ -4241,6 +4297,20 @@ function ChatViewContent(props: ChatViewProps) {
           const next = existing.filter((message) => message.id !== messageIdForSend);
           return next.length === existing.length ? existing : next;
         });
+      }
+      const currentComposerDraft = useComposerDraftStore
+        .getState()
+        .getComposerDraft(composerDraftTarget);
+      if (
+        canRestoreComposerDraftAfterSendFailure({
+          promptLength: promptRef.current.length,
+          imageCount: composerImagesRef.current.length,
+          terminalContextCount: composerTerminalContextsRef.current.length,
+          elementContextCount: composerElementContextsRef.current.length,
+          previewAnnotationCount: currentComposerDraft?.previewAnnotations.length ?? 0,
+          reviewCommentCount: currentComposerDraft?.reviewComments.length ?? 0,
+        })
+      ) {
         promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -4272,7 +4342,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
   };
 
-  const onInterrupt = async () => {
+  const onInterruptImpl = async () => {
     if (!activeThread) return;
     const result = await interruptThreadTurn({
       environmentId,
@@ -4286,6 +4356,18 @@ function ChatViewContent(props: ChatViewProps) {
       );
     }
   };
+
+  // Stable handler identities for the memoized composer. `onSendImpl` /
+  // `onInterruptImpl` close over per-render values (and per-token streamed
+  // thread state), so referencing them directly would defeat ChatComposer's
+  // memo. Route through refs that always hold the latest implementation and
+  // expose stable `useCallback` wrappers.
+  const onSendImplRef = useRef(onSendImpl);
+  onSendImplRef.current = onSendImpl;
+  const onInterruptImplRef = useRef(onInterruptImpl);
+  onInterruptImplRef.current = onInterruptImpl;
+  const onSend = useCallback((e?: { preventDefault: () => void }) => onSendImplRef.current(e), []);
+  const onInterrupt = useCallback(() => onInterruptImplRef.current(), []);
 
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
@@ -5098,7 +5180,23 @@ function ChatViewContent(props: ChatViewProps) {
         <ProviderStatusBanner status={activeProviderStatus} />
         <ThreadErrorBanner
           error={threadError}
-          onDismiss={() => setThreadError(activeThread.id, null)}
+          onDismiss={() => {
+            const dismissed = threadError;
+            setThreadError(activeThread.id, null);
+            // Server lastError is sticky on the session; remember the dismissed
+            // text so the banner stays hidden until lastError changes.
+            if (dismissed && isServerThread && serverThread?.session?.lastError === dismissed) {
+              setDismissedServerErrorsByThreadKey((existing) => {
+                if ((existing[routeThreadKey] ?? null) === dismissed) {
+                  return existing;
+                }
+                return {
+                  ...existing,
+                  [routeThreadKey]: dismissed,
+                };
+              });
+            }
+          }}
         />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -5189,7 +5287,9 @@ function ChatViewContent(props: ChatViewProps) {
                       draftId={draftId}
                       activeThreadId={activeThreadId}
                       activeThreadEnvironmentId={activeThread?.environmentId}
-                      activeThread={activeThread}
+                      activeThreadSessionProviderInstanceId={
+                        activeThread?.session?.providerInstanceId
+                      }
                       isServerThread={isServerThread}
                       isLocalDraftThread={isLocalDraftThread}
                       phase={phase}

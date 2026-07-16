@@ -727,6 +727,19 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     Stream.runForEach((reason) => signal({ _tag: "Wakeup", reason })),
     Effect.forkScoped,
   );
+  // A foreground wifi<->cellular handoff keeps connectivity `status` at
+  // "online", so `changes` never fires and the now-dead socket lingers until
+  // the OS errors it. When the active interface type changes, probe the live
+  // session (same path as a short foreground wakeup); a half-open socket fails
+  // the probe and triggers a clean reconnect.
+  if (connectivity.interfaceChanges) {
+    yield* connectivity.interfaceChanges.pipe(
+      Stream.changes,
+      Stream.drop(1),
+      Stream.runForEach(() => signal({ _tag: "Wakeup", reason: "application-active" })),
+      Effect.forkScoped,
+    );
+  }
   yield* run().pipe(Effect.forkScoped);
 
   const connect = Ref.update(intent, (current) => ({

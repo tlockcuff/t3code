@@ -413,11 +413,55 @@ export const OrchestrationThreadShell = Schema.Struct({
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
+  /**
+   * True while any subagent task is open (task.started/progress without a matching
+   * task.completed). Keeps sidebar "Working" accurate when the main session is
+   * ready/idle but background subagents are still running.
+   */
+  hasRunningSubagents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
+/**
+ * Sentinel epoch used when a payload omits the snapshot `epoch` field.
+ *
+ * A pre-epoch server (or an old cached snapshot) carries no epoch. Treating a
+ * missing epoch as this wildcard makes epoch comparison a no-op for those
+ * peers: a new client must NOT discard its cache just because an old server
+ * omits the epoch, and the server must NOT force a fresh snapshot when a client
+ * resumes without one. Only when BOTH sides present concrete, differing epochs
+ * is a reset/restore inferred.
+ */
+export const SNAPSHOT_EPOCH_WILDCARD = "*";
+
+/**
+ * A stable per-database identity minted once at DB init (migration 037). It
+ * changes when the server database is reset/restored, letting clients detect a
+ * sequence discontinuity and discard caches instead of freezing forever.
+ */
+export const OrchestrationSnapshotEpoch = Schema.String;
+export type OrchestrationSnapshotEpoch = typeof OrchestrationSnapshotEpoch.Type;
+
+const SnapshotEpochField = OrchestrationSnapshotEpoch.pipe(
+  Schema.withDecodingDefault(Effect.succeed(SNAPSHOT_EPOCH_WILDCARD)),
+);
+
+/**
+ * True only when both epochs are concrete (non-wildcard) and differ — i.e. the
+ * server database was reset/restored since the client cached its snapshot.
+ * Either side being the wildcard (absent epoch) is treated as compatible so
+ * backward compatibility is preserved in both directions.
+ */
+export function snapshotEpochsConflict(
+  left: OrchestrationSnapshotEpoch,
+  right: OrchestrationSnapshotEpoch,
+): boolean {
+  return left !== SNAPSHOT_EPOCH_WILDCARD && right !== SNAPSHOT_EPOCH_WILDCARD && left !== right;
+}
+
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  epoch: SnapshotEpochField,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
   updatedAt: IsoDateTime,
@@ -467,6 +511,15 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
    * client).
    */
   afterSequence: Schema.optionalKey(NonNegativeInt),
+  /**
+   * The epoch of the cached snapshot the client is resuming from. When it does
+   * not match the server's current epoch (e.g. the DB was reset/restored, so
+   * sequences restarted), the server ignores `afterSequence` and serves a fresh
+   * snapshot instead of a cursor-based replay the client could never reconcile.
+   * Absent means "no epoch known" (old client / cache) and is treated as a
+   * wildcard that never forces a fresh snapshot.
+   */
+  epoch: Schema.optionalKey(OrchestrationSnapshotEpoch),
 });
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
@@ -480,11 +533,18 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * sequence on the client).
    */
   afterSequence: Schema.optionalKey(NonNegativeInt),
+  /**
+   * The epoch of the cached snapshot the client is resuming from. See
+   * `OrchestrationSubscribeShellInput.epoch`: a mismatch makes the server
+   * ignore `afterSequence` and serve a fresh snapshot.
+   */
+  epoch: Schema.optionalKey(OrchestrationSnapshotEpoch),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  epoch: SnapshotEpochField,
   thread: OrchestrationThread,
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;

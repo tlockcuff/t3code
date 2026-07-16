@@ -70,6 +70,34 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
+        // Close the check-then-stop race: between listing bindings and stopping,
+        // a new turn may have started (activeTurnId) or a turn may have completed
+        // and bumped lastSeenAt. Re-read the freshest state immediately before
+        // stopping so we never reap a session the user just re-activated.
+        const freshBindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
+        const freshBinding = freshBindings.find((b) => b.threadId === binding.threadId);
+        const freshThread = yield* projectionSnapshotQuery
+          .getThreadShellById(binding.threadId)
+          .pipe(Effect.map(Option.getOrUndefined));
+        if (freshThread?.session?.activeTurnId != null) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
+            threadId: binding.threadId,
+            activeTurnId: freshThread.session.activeTurnId,
+            idleDurationMs,
+          });
+          continue;
+        }
+        if (freshBinding && freshBinding.lastSeenAt !== binding.lastSeenAt) {
+          const freshLastSeenMs = Date.parse(freshBinding.lastSeenAt);
+          if (!Number.isNaN(freshLastSeenMs) && now - freshLastSeenMs < inactivityThresholdMs) {
+            yield* Effect.logDebug("provider.session.reaper.skipped-recently-active", {
+              threadId: binding.threadId,
+              idleDurationMs: now - freshLastSeenMs,
+            });
+            continue;
+          }
+        }
+
         const reaped = yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
           Effect.tap(() =>
             Effect.logInfo("provider.session.reaped", {

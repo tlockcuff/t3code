@@ -53,6 +53,7 @@ type ThreadStatusInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasRunningSubagents"
   | "interactionMode"
   | "latestTurn"
   | "session"
@@ -380,7 +381,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" || thread.hasRunningSubagents) {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",

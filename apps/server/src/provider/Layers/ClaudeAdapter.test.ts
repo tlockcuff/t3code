@@ -19,6 +19,7 @@ import {
   ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
+  TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -1393,6 +1394,237 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(turnCompleted.payload.state, "interrupted");
         assert.equal(turnCompleted.payload.errorMessage, "Error: Request was aborted.");
         assert.equal(turnCompleted.payload.stopReason, "tool_use");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("treats Claude ede_diagnostic mid tool_use results as interrupted", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Emitted by the Claude agent loop when cancel races mid tool_use.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-ede",
+        uuid: "result-ede",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        [
+          "session.started",
+          "session.configured",
+          "session.state.changed",
+          "turn.started",
+          "thread.started",
+          "turn.completed",
+        ],
+      );
+
+      const turnCompleted = runtimeEvents[runtimeEvents.length - 1];
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(String(turnCompleted.turnId), String(turn.turnId));
+        assert.equal(turnCompleted.payload.state, "interrupted");
+        assert.equal(
+          turnCompleted.payload.errorMessage,
+          "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use",
+        );
+      }
+      assert.isFalse(runtimeEvents.some((event) => event.type === "runtime.error"));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("treats results after interruptTurn as interrupted even without abort text", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      yield* adapter.interruptTurn(session.threadId, turn.turnId);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["something opaque from the agent loop"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-interrupt-flag",
+        uuid: "result-interrupt-flag",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const turnCompleted = runtimeEvents[runtimeEvents.length - 1];
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(turnCompleted.payload.state, "interrupted");
+      }
+      assert.isFalse(runtimeEvents.some((event) => event.type === "runtime.error"));
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not leak interrupt intent when interruptTurn fires with no active turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // Interrupt with no turn active: the flag must NOT be set, so it cannot
+      // survive into and misclassify the next turn.
+      yield* adapter.interruptTurn(session.threadId, TurnId.make("turn-none"));
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-interrupt-stale",
+        uuid: "result-interrupt-stale",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const turnCompleted = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(String(turnCompleted.turnId), String(turn.turnId));
+        assert.equal(turnCompleted.payload.state, "completed");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("clears stale interrupt intent when a new turn opens", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      // First turn: interrupt it (sets the flag) then feed an interrupted result.
+      const firstTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "first",
+        attachments: [],
+      });
+      yield* adapter.interruptTurn(session.threadId, firstTurn.turnId);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["opaque"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-stale-clear-1",
+        uuid: "result-stale-clear-1",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      // Second turn opens: a normal success result must be classified completed
+      // because sendTurn reset the (already-consumed) interrupt intent.
+      const secondTurn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "second",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-stale-clear-2",
+        uuid: "result-stale-clear-2",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      runtimeEventsFiber.interruptUnsafe();
+
+      const completed = runtimeEvents.filter((event) => event.type === "turn.completed");
+      assert.equal(completed.length, 2);
+      const firstCompleted = completed[0];
+      const secondCompleted = completed[1];
+      if (firstCompleted?.type === "turn.completed") {
+        assert.equal(firstCompleted.payload.state, "interrupted");
+      }
+      if (secondCompleted?.type === "turn.completed") {
+        assert.equal(String(secondCompleted.turnId), String(secondTurn.turnId));
+        assert.equal(secondCompleted.payload.state, "completed");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3685,6 +3917,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("resolves in-flight AskUserQuestion inputs when the session is stopped", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      // A live AskUserQuestion callback whose abort signal is NEVER fired,
+      // simulating an SDK that does not abort in-flight canUseTool callbacks
+      // when the query is closed.
+      const controller = new AbortController();
+      const permissionPromise = canUseTool(
+        "AskUserQuestion",
+        {
+          questions: [
+            {
+              question: "Proceed?",
+              header: "Proceed",
+              options: [{ label: "Yes", description: "Go" }],
+              multiSelect: false,
+            },
+          ],
+        },
+        {
+          signal: controller.signal,
+          toolUseID: "tool-ask-stop",
+        },
+      );
+
+      const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requestedEvent._tag, "Some");
+      if (requestedEvent._tag !== "Some" || requestedEvent.value.type !== "user-input.requested") {
+        assert.fail("Expected user-input.requested event");
+        return;
+      }
+
+      // Stop the session while the user-input is still pending. Without the fix
+      // the awaiting fiber leaks and the UI keeps a phantom user-input.requested.
+      const resolvedFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* adapter.stopSession(session.threadId);
+
+      const resolvedEvent = yield* Fiber.join(resolvedFiber);
+      assert.equal(resolvedEvent._tag, "Some");
+      if (resolvedEvent._tag !== "Some" || resolvedEvent.value.type !== "user-input.resolved") {
+        assert.fail("Expected user-input.resolved event");
+        return;
+      }
+      assert.deepEqual(resolvedEvent.value.payload.answers, {});
+
+      // The canUseTool promise must resolve (no leaked fiber).
+      const permissionResult = yield* Effect.promise(() => permissionPromise);
+      assert.equal((permissionResult as PermissionResult).behavior, "allow");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("writes provider-native observability records when enabled", () => {
     const nativeEvents: Array<{
       event?: {
@@ -3725,6 +4028,21 @@ describe("ClaudeAdapterLive", () => {
         (event) => event.type === "turn.completed",
       ).pipe(Stream.runHead, Effect.forkChild);
 
+      // content_block_start is logged (block boundary is kept).
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-native-log",
+        uuid: "stream-native-log-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        },
+      } as unknown as SDKMessage);
+
+      // Per-token content_block_delta stream events are skipped in the native
+      // NDJSON log (perf: avoid JSON-encoding one record per token).
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-native-log",
@@ -3771,11 +4089,19 @@ describe("ClaudeAdapterLive", () => {
         nativeEvents.some((record) => String(record.event?.turnId) === String(turn.turnId)),
         true,
       );
+      // The block-start stream event and the result are logged.
       assert.equal(
         nativeEvents.some(
-          (record) => record.event?.method === "claude/stream_event/content_block_delta/text_delta",
+          (record) => record.event?.method === "claude/stream_event/content_block_start",
         ),
         true,
+      );
+      // The per-token content_block_delta is NOT logged.
+      assert.equal(
+        nativeEvents.some((record) =>
+          String(record.event?.method).startsWith("claude/stream_event/content_block_delta"),
+        ),
+        false,
       );
       assert.equal(
         nativeThreadIds.every((threadId) => threadId === String(THREAD_ID)),

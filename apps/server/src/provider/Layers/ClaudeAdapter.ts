@@ -257,6 +257,8 @@ interface ClaudeSessionContext {
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
+  /** Set when the user interrupts an in-flight turn; next result is treated as interrupted. */
+  interruptRequested: boolean;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -359,8 +361,19 @@ function resultErrorsText(result: SDKResultMessage): string {
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {
+  if (result.subtype === "success") {
+    return false;
+  }
+
   const errors = resultErrorsText(result);
   if (errors.includes("interrupt")) {
+    return true;
+  }
+
+  // Claude agent-loop diagnostic emitted when cancel/interrupt races mid tool_use
+  // (e.g. `[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use`).
+  // This is not a user-facing failure — treat it as a clean interrupt.
+  if (errors.includes("[ede_diagnostic]") || errors.includes("ede_diagnostic")) {
     return true;
   }
 
@@ -1452,6 +1465,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Skip per-token content_block_delta stream events: JSON-encoding one native
+    // record per token on the stream fiber is pure overhead. We keep the block
+    // start/stop stream events and all non-stream messages (assistant, result,
+    // etc.) so the native NDJSON log still reconstructs message boundaries.
+    if (
+      message.type === "stream_event" &&
+      sdkMessageType(message.event) === "content_block_delta"
+    ) {
+      return;
+    }
+
     const observedAt = yield* nowIso;
     const itemId = sdkNativeItemId(message);
 
@@ -1943,6 +1967,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     errorMessage?: string,
     result?: SDKResultMessage,
   ) {
+    context.interruptRequested = false;
+
     const resultContextWindow = maxClaudeContextWindowFromModelUsage(result?.modelUsage);
     if (resultContextWindow !== undefined) {
       context.lastKnownContextWindow = resultContextWindow;
@@ -2642,7 +2668,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    const status = turnStatusFromResult(message);
+    // Prefer the explicit interrupt flag over result heuristics — cancel mid
+    // tool_use often yields opaque diagnostics rather than a clean abort error.
+    const status = context.interruptRequested ? "interrupted" : turnStatusFromResult(message);
     const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
 
     if (status === "failed") {
@@ -3070,6 +3098,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
     context.pendingApprovals.clear();
+
+    // Resolve any in-flight AskUserQuestion inputs so the fiber awaiting the
+    // answers Deferred does not leak if the SDK fails to abort the canUseTool
+    // callback on close. Resolving with empty answers unblocks that fiber,
+    // which then emits its own user-input.resolved and clears the UI's phantom
+    // user-input.requested — mirroring how the abort handler already relies on
+    // the awaiting fiber to emit the resolved event. Snapshot the entries first
+    // because the awaiting fiber mutates the map as it wakes.
+    for (const pending of Array.from(context.pendingUserInputs.values())) {
+      yield* Deferred.succeed(pending.answers, {} as ProviderUserInputAnswers);
+    }
+    context.pendingUserInputs.clear();
 
     if (context.turnState) {
       yield* completeTurn(context, "interrupted", "Session stopped.");
@@ -3662,6 +3702,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         stopped: false,
+        interruptRequested: false,
       };
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);
@@ -3803,6 +3844,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const updatedAt = yield* nowIso;
       context.turnState = turnState;
+      // Clear any stale interrupt intent so a failed interrupt on a prior turn
+      // does not misclassify this fresh turn's first result as interrupted.
+      context.interruptRequested = false;
       context.session = {
         ...context.session,
         status: "running",
@@ -3846,6 +3890,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
+      // Mark intent before the RPC so a racing result (e.g. ede_diagnostic mid
+      // tool_use) is classified as interrupted even if the interrupt call fails.
+      // Only set when a turn is actually active: setting it with no turn would
+      // survive into the next turn and misclassify its first result.
+      if (context.turnState) {
+        context.interruptRequested = true;
+      }
       yield* Effect.tryPromise({
         try: () => context.query.interrupt(),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),

@@ -336,6 +336,118 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.latestTurn?.completedAt).toBeNull();
       }
     });
+
+    it("merges a streaming delta into the last message via the fast path", () => {
+      const threadWithMessages: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: MessageId.make("msg-user"),
+            role: "user",
+            text: "Prompt",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+          {
+            id: MessageId.make("msg-assistant"),
+            role: "assistant",
+            text: "Hel",
+            turnId: TurnId.make("turn-1"),
+            streaming: true,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+        ],
+      };
+
+      const result = applyThreadDetailEvent(threadWithMessages, {
+        ...baseEventFields,
+        sequence: 9,
+        occurredAt: "2026-04-01T06:02:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-assistant"),
+          role: "assistant",
+          text: "lo",
+          turnId: TurnId.make("turn-1"),
+          streaming: true,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:02:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        // The fast path must preserve message order and count.
+        expect(result.thread.messages).toHaveLength(2);
+        expect(result.thread.messages[0]?.id).toBe("msg-user");
+        expect(result.thread.messages[0]?.text).toBe("Prompt");
+        expect(result.thread.messages[1]?.id).toBe("msg-assistant");
+        expect(result.thread.messages[1]?.text).toBe("Hello");
+        expect(result.thread.messages[1]?.streaming).toBe(true);
+      }
+    });
+
+    it("updates a non-last message via the general merge path", () => {
+      const threadWithMessages: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: MessageId.make("msg-a"),
+            role: "assistant",
+            text: "First",
+            turnId: TurnId.make("turn-1"),
+            streaming: true,
+            createdAt: "2026-04-01T06:00:00.000Z",
+            updatedAt: "2026-04-01T06:00:00.000Z",
+          },
+          {
+            id: MessageId.make("msg-b"),
+            role: "user",
+            text: "Second",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T06:01:00.000Z",
+            updatedAt: "2026-04-01T06:01:00.000Z",
+          },
+        ],
+      };
+
+      // Target the first (non-last) message: the fast path must not fire, and
+      // the general path must update it in place without reordering.
+      const result = applyThreadDetailEvent(threadWithMessages, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T06:03:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-a"),
+          role: "assistant",
+          text: " updated",
+          turnId: TurnId.make("turn-1"),
+          streaming: true,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:03:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toHaveLength(2);
+        expect(result.thread.messages[0]?.id).toBe("msg-a");
+        expect(result.thread.messages[0]?.text).toBe("First updated");
+        expect(result.thread.messages[1]?.id).toBe("msg-b");
+        expect(result.thread.messages[1]?.text).toBe("Second");
+      }
+    });
   });
 
   describe("thread.session-set", () => {

@@ -109,6 +109,7 @@ const eventuallyState = Effect.fn("TestConnectionHarness.eventuallyState")(funct
 
 const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?: {
   readonly networkStatus?: NetworkStatus;
+  readonly interfaceType?: string;
   readonly prepare?: (
     attempt: number,
     target: ConnectionTarget,
@@ -118,6 +119,9 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
 }) {
   const networkStatus = yield* SubscriptionRef.make<NetworkStatus>(
     options?.networkStatus ?? "online",
+  );
+  const interfaceType = yield* SubscriptionRef.make<string | undefined>(
+    options?.interfaceType ?? "wifi",
   );
   const prepareCount = yield* Ref.make(0);
   const sessionCount = yield* Ref.make(0);
@@ -136,6 +140,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
   const connectivity = Connectivity.Connectivity.of({
     status: SubscriptionRef.get(networkStatus),
     changes: SubscriptionRef.changes(networkStatus),
+    interfaceChanges: SubscriptionRef.changes(interfaceType),
   });
 
   const prepare = Effect.fn("TestConnectionDriver.prepare")(function* (target: ConnectionTarget) {
@@ -198,6 +203,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     sessionCount,
     releaseCount,
     setNetworkStatus: (status: NetworkStatus) => SubscriptionRef.set(networkStatus, status),
+    setInterfaceType: (type: string | undefined) => SubscriptionRef.set(interfaceType, type),
     wake: (reason: "application-active" | "application-resume" | "credentials-changed") =>
       SubscriptionRef.update(wakeups, (event) => ({
         sequence: event.sequence + 1,
@@ -676,6 +682,54 @@ describe("EnvironmentSupervisor", () => {
       expect(yield* Ref.get(harness.releaseCount)).toBe(0);
       expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
     }),
+  );
+
+  it.effect("probes the live session when the network interface type changes", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const probeCalled = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        interfaceType: "wifi",
+        probe: () =>
+          Ref.update(probeCount, (count) => count + 1).pipe(
+            Effect.andThen(Deferred.succeed(probeCalled, undefined)),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      // Status stays "online" across a wifi->cellular handoff; only the
+      // interface type changes.
+      yield* harness.setInterfaceType("cellular");
+      yield* Deferred.await(probeCalled);
+
+      expect(yield* Ref.get(probeCount)).toBe(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
+  it.effect("reconnects when a probe fails after the interface type changes", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        interfaceType: "wifi",
+        probe: (attempt) =>
+          attempt === 1 ? Effect.fail(transient("The live session is stale.")) : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.setInterfaceType("cellular");
+      yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
+      yield* TestClock.adjust("1 second");
+      yield* eventuallyState(supervisor.state, (state) => state.phase === "connected");
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("republishes the healthy session so subscriptions resync on foreground", () =>

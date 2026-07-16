@@ -74,6 +74,34 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+/**
+ * Resolve the error banner message for a server thread.
+ *
+ * Local client errors win. Server `lastError` is sticky on the session, so
+ * dismiss tracks the dismissed message and suppresses it until `lastError`
+ * changes to something else (or clears).
+ */
+export function resolveDisplayedThreadError(input: {
+  localError: string | null;
+  serverLastError: string | null | undefined;
+  dismissedServerError: string | null;
+}): string | null {
+  if (input.localError) {
+    return input.localError;
+  }
+  const serverError =
+    typeof input.serverLastError === "string" && input.serverLastError.trim().length > 0
+      ? input.serverLastError
+      : null;
+  if (!serverError) {
+    return null;
+  }
+  if (serverError === input.dismissedServerError) {
+    return null;
+  }
+  return serverError;
+}
+
 export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
   threadId: ThreadId;
   turnId?: TurnId;
@@ -167,6 +195,40 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
 export interface PullRequestDialogState {
   initialReference: string | null;
   key: number;
+}
+
+/**
+ * When a turn-start send fails, the optimistic user bubble must ALWAYS be
+ * removed: the server never accepted the turn, so leaving it rendered strands a
+ * phantom message that the server has no record of. (Draft restoration is a
+ * separate concern — see `canRestoreComposerDraftAfterSendFailure`.)
+ */
+export function shouldRemoveOptimisticMessageOnSendFailure(): boolean {
+  return true;
+}
+
+/**
+ * Whether the failed send's text/attachments can be safely restored back into
+ * the composer. Only restore when the composer is still empty; if the user
+ * typed something new during the in-flight send, restoring would clobber it, so
+ * the failed text is instead recoverable via the surfaced thread error.
+ */
+export function canRestoreComposerDraftAfterSendFailure(input: {
+  promptLength: number;
+  imageCount: number;
+  terminalContextCount: number;
+  elementContextCount: number;
+  previewAnnotationCount: number;
+  reviewCommentCount: number;
+}): boolean {
+  return (
+    input.promptLength === 0 &&
+    input.imageCount === 0 &&
+    input.terminalContextCount === 0 &&
+    input.elementContextCount === 0 &&
+    input.previewAnnotationCount === 0 &&
+    input.reviewCommentCount === 0
+  );
 }
 
 export function readFileAsDataUrl(file: File): Promise<string> {

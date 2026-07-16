@@ -438,7 +438,13 @@ export interface ChatComposerProps {
   // Thread context
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
-  activeThread: Thread | undefined;
+  /**
+   * The active thread's server session provider instance id, if any. Passed as
+   * a narrow field (rather than the whole `Thread`) so streamed token updates
+   * that mint a fresh thread object per token don't defeat this component's
+   * memo — the composer only ever reads this field off the thread's session.
+   */
+  activeThreadSessionProviderInstanceId: ProviderInstanceId | null | undefined;
   isServerThread: boolean;
   isLocalDraftThread: boolean;
 
@@ -549,7 +555,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     draftId,
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
-    activeThread,
+    activeThreadSessionProviderInstanceId,
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     phase,
@@ -666,7 +672,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   const threadProvider =
-    activeThread?.session?.providerInstanceId ??
+    activeThreadSessionProviderInstanceId ??
     activeThreadModelSelection?.instanceId ??
     activeProjectDefaultModelSelection?.instanceId ??
     null;
@@ -680,16 +686,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ) ?? ProviderDriverKind.make("codex");
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const lockedContinuationGroupKey = useMemo((): string | null => {
-    if (!lockedProvider || !activeThread) return null;
+    if (!lockedProvider || !activeThreadId) return null;
     const lockedInstanceId =
-      activeThread.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
+      activeThreadSessionProviderInstanceId ?? activeThreadModelSelection?.instanceId;
     if (!lockedInstanceId) return null;
     return (
       providerInstanceEntries.find((entry) => entry.instanceId === lockedInstanceId)
         ?.continuationGroupKey ?? null
     );
   }, [
-    activeThread,
+    activeThreadId,
+    activeThreadSessionProviderInstanceId,
     activeThreadModelSelection?.instanceId,
     lockedProvider,
     providerInstanceEntries,
@@ -708,7 +715,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
     const candidates: Array<string | null | undefined> = [
       composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
+      activeThreadSessionProviderInstanceId,
       activeThreadModelSelection?.instanceId,
       activeProjectDefaultModelSelection?.instanceId,
     ];
@@ -750,7 +757,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   }, [
     activeProjectDefaultModelSelection?.instanceId,
-    activeThread?.session?.providerInstanceId,
+    activeThreadSessionProviderInstanceId,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
     explicitSelectedInstanceId,
@@ -1960,7 +1967,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
       },
       addTerminalContext: (selection: TerminalContextSelection) => {
-        if (!activeThread) return;
+        if (!activeThreadId) return;
         const snapshot = composerEditorRef.current?.readSnapshot() ?? {
           value: promptRef.current,
           cursor: composerCursor,
@@ -1980,7 +1987,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           insertion.prompt,
           {
             id: randomUUID(),
-            threadId: activeThread.id,
+            threadId: activeThreadId,
             createdAt: new Date().toISOString(),
             ...selection,
           },
@@ -2010,7 +2017,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       }),
     }),
     [
-      activeThread,
+      activeThreadId,
       composerDraftTarget,
       composerCursor,
       composerTerminalContexts,

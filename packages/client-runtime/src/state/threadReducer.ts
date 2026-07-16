@@ -191,27 +191,18 @@ export function applyThreadDetailEvent(
         updatedAt: event.payload.updatedAt,
       };
 
-      const existingMessage = thread.messages.find((entry) => entry.id === message.id);
-      const messages = existingMessage
-        ? Arr.map(thread.messages, (entry) =>
-            entry.id !== message.id
-              ? entry
-              : {
-                  ...entry,
-                  text: message.streaming
-                    ? `${entry.text}${message.text}`
-                    : message.text.length > 0
-                      ? message.text
-                      : entry.text,
-                  streaming: message.streaming,
-                  ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
-                  ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
-                  ...(message.attachments !== undefined
-                    ? { attachments: message.attachments }
-                    : {}),
-                },
-          )
-        : Arr.append(thread.messages, message);
+      // Streaming deltas almost always target the last message, so try a
+      // fast path that avoids scanning/rebuilding the whole array before
+      // falling back to the general find()/map() merge.
+      const lastMessage = thread.messages.at(-1);
+      const messages =
+        lastMessage !== undefined && lastMessage.id === message.id
+          ? [...thread.messages.slice(0, -1), mergeMessage(lastMessage, message)]
+          : thread.messages.some((entry) => entry.id === message.id)
+            ? Arr.map(thread.messages, (entry) =>
+                entry.id !== message.id ? entry : mergeMessage(entry, message),
+              )
+            : Arr.append(thread.messages, message);
       // Update latestTurn for assistant messages bound to a turn. A completed
       // assistant message only settles the turn once the session is no longer
       // running it — providers may emit several assistant messages per turn
@@ -517,6 +508,29 @@ function checkpointStatusToTurnState(
     case "missing":
       return "completed";
   }
+}
+
+/**
+ * Merge an incoming message-sent payload into an existing message. Streaming
+ * deltas append to the running text; non-streaming updates replace it (unless
+ * empty) and settle `updatedAt`.
+ */
+function mergeMessage(
+  entry: OrchestrationMessage,
+  message: OrchestrationMessage,
+): OrchestrationMessage {
+  return {
+    ...entry,
+    text: message.streaming
+      ? `${entry.text}${message.text}`
+      : message.text.length > 0
+        ? message.text
+        : entry.text,
+    streaming: message.streaming,
+    ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
+    ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
+    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+  };
 }
 
 function rebindCheckpointAssistantMessage(

@@ -431,6 +431,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingApprovals: true,
           hasPendingUserInput: false,
           hasActionableProposedPlan: false,
+          hasRunningSubagents: false,
         },
       ]);
 
@@ -1590,6 +1591,30 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
     }),
+  );
+
+  it.effect(
+    "mints a stable, concrete per-database epoch shared across snapshot and sequence reads",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+
+        // Migration 037 mints a concrete epoch (never the wildcard) so the
+        // resume protocol can detect a DB reset/restore.
+        const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+        assert.notEqual(shellSnapshot.epoch, "*");
+        assert.equal(typeof shellSnapshot.epoch, "string");
+        assert.isTrue(shellSnapshot.epoch.length > 0);
+
+        // The cheap sequence read exposes the same epoch, so the server can
+        // compare a client's resume epoch without loading a full snapshot.
+        const { epoch: sequenceEpoch } = yield* snapshotQuery.getSnapshotSequence();
+        assert.equal(sequenceEpoch, shellSnapshot.epoch);
+
+        // The epoch is stable across reads for the same database.
+        const secondShellSnapshot = yield* snapshotQuery.getShellSnapshot();
+        assert.equal(secondShellSnapshot.epoch, shellSnapshot.epoch);
+      }),
   );
 });
 

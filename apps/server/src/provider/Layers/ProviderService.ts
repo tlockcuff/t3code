@@ -281,6 +281,35 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  // Refresh a binding's lastSeenAt so a long-running turn that only completes
+  // after the reaper's inactivity threshold does not leave a warm session
+  // looking idle and get reaped mid-use. `upsert` merges with the persisted
+  // row, so a minimal binding is enough to bump the timestamp. Failures are
+  // swallowed (logged) — this is a best-effort liveness touch, not on the
+  // critical path of event delivery.
+  const refreshBindingLastSeen = (threadId: ThreadId): Effect.Effect<void> =>
+    directory.getBinding(threadId).pipe(
+      Effect.flatMap((bindingOption) =>
+        Option.match(bindingOption, {
+          onNone: () => Effect.void,
+          onSome: (binding) =>
+            directory.upsert({
+              threadId: binding.threadId,
+              provider: binding.provider,
+              ...(binding.providerInstanceId !== undefined
+                ? { providerInstanceId: binding.providerInstanceId }
+                : {}),
+            }),
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.logWarning("provider.session.refresh-last-seen-failed", {
+          threadId,
+          error,
+        }),
+      ),
+    );
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
@@ -293,7 +322,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(publishRuntimeEvent(canonicalEvent)),
+          Effect.andThen(
+            canonicalEvent.type === "turn.completed"
+              ? refreshBindingLastSeen(canonicalEvent.threadId)
+              : Effect.void,
+          ),
+        ),
       ),
     );
 

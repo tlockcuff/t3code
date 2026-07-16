@@ -51,6 +51,15 @@ function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "on
   return "unknown";
 }
 
+/**
+ * The active link type (wifi/cellular/…). A foreground wifi->cellular handoff
+ * keeps `networkStatus` at "online" but silently kills the live socket, so the
+ * supervisor watches this separately to force a health probe on the switch.
+ */
+function networkInterfaceType(state: Network.NetworkState): string | undefined {
+  return state.type === undefined ? undefined : String(state.type);
+}
+
 const readNetworkStatus = Effect.tryPromise({
   try: () => Network.getNetworkStateAsync(),
   catch: () => undefined,
@@ -80,6 +89,31 @@ const connectivityLayer = Connectivity.layer({
       ),
       (subscription) => Effect.sync(() => subscription.remove()),
     ).pipe(Effect.asVoid),
+  ),
+  // Emit an initial snapshot so the supervisor's `Stream.changes`/`drop(1)`
+  // establishes a baseline and only reacts to genuine interface switches.
+  interfaceChanges: Stream.concat(
+    Stream.fromEffect(
+      Effect.tryPromise({
+        try: () => Network.getNetworkStateAsync(),
+        catch: () => undefined,
+      }).pipe(
+        Effect.match({
+          onFailure: () => undefined,
+          onSuccess: networkInterfaceType,
+        }),
+      ),
+    ),
+    Stream.callback<string | undefined>((queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() =>
+          Network.addNetworkStateListener((state) => {
+            Queue.offerUnsafe(queue, networkInterfaceType(state));
+          }),
+        ),
+        (subscription) => Effect.sync(() => subscription.remove()),
+      ).pipe(Effect.asVoid),
+    ),
   ),
 });
 

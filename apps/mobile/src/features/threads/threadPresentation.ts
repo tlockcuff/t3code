@@ -73,7 +73,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (thread.session?.status === "running" || thread.hasRunningSubagents) {
     return {
       kind: "working",
       label: "Working",

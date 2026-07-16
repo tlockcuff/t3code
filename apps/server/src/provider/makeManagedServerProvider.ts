@@ -131,9 +131,18 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
 
-  const refreshSnapshot = Effect.fn("refreshSnapshot")(function* () {
-    // Forced refreshes must not reuse stale plan/rate-limit meters.
-    clearUsageCache();
+  const refreshSnapshot = Effect.fn("refreshSnapshot")(function* (options?: {
+    /**
+     * When true, expire usage-cache TTLs so plan/rate-limit meters are refetched.
+     * Previous successful snapshots are retained for error fallback (see usageCache).
+     * Periodic refreshes leave the cache alone — TTL / window-reset expiry is enough
+     * and avoids thrashing the Claude usage API (which blanks the sidebar on 429).
+     */
+    readonly forceUsageRefresh?: boolean;
+  }) {
+    if (options?.forceUsageRefresh) {
+      clearUsageCache();
+    }
     const nextSettings = yield* input.getSettings;
     return yield* applySnapshot(nextSettings, { forceRefresh: true });
   });
@@ -148,6 +157,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       const snapshot = yield* Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot));
       const delay = nextProviderSnapshotRefreshDelay(snapshot, baseRefreshInterval);
       yield* Effect.sleep(delay);
+      // Periodic refresh: rely on usage-cache TTL (including shortened TTL near
+      // window resets). Do not clearUsageCache here — that deleted last-good
+      // snapshots and made rate-limit fallback impossible.
       yield* refreshSnapshot();
     }).pipe(Effect.ignoreCause({ log: true })),
   ).pipe(Effect.forkScoped);
@@ -160,7 +172,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   return {
     maintenanceCapabilities: input.maintenanceCapabilities,
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
-    refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
+    // Explicit UI/API refresh should pull fresh meters when the cache allows.
+    refresh: refreshSnapshot({ forceUsageRefresh: true }).pipe(
+      Effect.tapError(Effect.logError),
+      Effect.orDie,
+    ),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
