@@ -191,7 +191,7 @@ import {
   serverEnvironment,
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
-import { threadEnvironment } from "../state/threads";
+import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
@@ -200,6 +200,7 @@ import {
   useThread,
   useThreadProposedPlans,
   useThreadRefs,
+  useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
@@ -218,6 +219,7 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
+  buildShellPendingThread,
   buildThreadTurnInterruptInput,
   canRestoreComposerDraftAfterSendFailure,
   collectUserMessageBlobPreviewUrls,
@@ -236,6 +238,8 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveDisplayedThreadError,
   resolveSendEnvMode,
+  shellIndicatesThreadStarted,
+  shouldShowThreadHistoryLoading,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
   waitForStartedServerThread,
@@ -1041,7 +1045,13 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const composerDraftTarget: ScopedThreadRef | DraftId =
     routeKind === "server" ? routeThreadRef : props.draftId;
-  const serverThread = useThread(routeKind === "server" ? routeThreadRef : null);
+  const isServerRoute = routeKind === "server";
+  const serverThread = useThread(isServerRoute ? routeThreadRef : null);
+  const serverThreadShell = useThreadShell(isServerRoute ? routeThreadRef : null);
+  const serverThreadState = useEnvironmentThread(
+    isServerRoute ? routeThreadRef.environmentId : null,
+    isServerRoute ? routeThreadRef.threadId : null,
+  );
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
@@ -1248,19 +1258,34 @@ function ChatViewContent(props: ChatViewProps) {
         : undefined,
     [draftThread, fallbackDraftProject?.defaultModelSelection, threadId],
   );
-  const isServerThread = routeKind === "server" && serverThread !== null;
-  const activeThread = isServerThread ? serverThread : localDraftThread;
+  // Server routes must not fall back to an empty local draft while detail is
+  // still hydrating — that paints "Send a message to start the conversation"
+  // over threads that already have history. Prefer live detail, then shell
+  // chrome, and only then a draft (true local-only threads).
+  const isServerThread = isServerRoute && (serverThread !== null || serverThreadShell !== null);
+  const activeThread = serverThread
+    ? serverThread
+    : isServerRoute && serverThreadShell
+      ? buildShellPendingThread(serverThreadShell)
+      : localDraftThread;
   const threadError = isServerThread
     ? resolveDisplayedThreadError({
         localError: localServerError,
-        serverLastError: serverThread?.session?.lastError,
+        serverLastError: activeThread?.session?.lastError,
         dismissedServerError,
       })
     : localDraftError;
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
-  const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
+  // Never treat a server route as a local draft just because detail is mid-load.
+  const isLocalDraftThread = !isServerRoute && localDraftThread !== undefined;
+  const isHistoryLoading = shouldShowThreadHistoryLoading({
+    routeKind,
+    messageCount: activeThread?.messages.length ?? 0,
+    detailStatus: serverThreadState.status,
+    shellIndicatesStarted: shellIndicatesThreadStarted(serverThreadShell),
+  });
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
   const runningTerminalIds = useThreadRunningTerminalIds({
@@ -4059,7 +4084,11 @@ function ChatViewContent(props: ChatViewProps) {
     }
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    // Shell metadata can prove history exists before detail messages hydrate;
+    // don't treat that gap as a first-message / new-worktree bootstrap.
+    const isFirstMessage =
+      !isServerThread ||
+      (activeThread.messages.length === 0 && !shellIndicatesThreadStarted(serverThreadShell));
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
@@ -5208,6 +5237,7 @@ function ChatViewContent(props: ChatViewProps) {
               <MessagesTimeline
                 key={activeThread.id}
                 isWorking={isWorking}
+                isHistoryLoading={isHistoryLoading}
                 activeTurnInProgress={isWorking || !latestTurnSettled}
                 activeTurnStartedAt={activeWorkStartedAt}
                 listRef={legendListRef}

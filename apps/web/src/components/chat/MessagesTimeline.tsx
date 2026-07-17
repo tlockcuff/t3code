@@ -157,6 +157,8 @@ const EMPTY_SUBAGENT_WORK_LOG: ReadonlyMap<string, ReadonlyArray<TimelineWorkEnt
 
 interface MessagesTimelineProps {
   isWorking: boolean;
+  /** True while thread detail is hydrating and messages may still arrive. */
+  isHistoryLoading?: boolean;
   activeTurnInProgress: boolean;
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
@@ -192,6 +194,7 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
+  isHistoryLoading = false,
   activeTurnInProgress,
   activeTurnStartedAt,
   listRef,
@@ -466,6 +469,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   if (rows.length === 0 && !isWorking) {
+    if (isHistoryLoading) {
+      return (
+        <div className="flex h-full items-center justify-center">
+          <p className="text-sm text-muted-foreground/40">Loading conversation…</p>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground/30">

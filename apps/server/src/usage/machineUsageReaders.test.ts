@@ -11,88 +11,96 @@ import { parseCursorUsageCsv } from "./cursorUsageHistory.ts";
 import { readGrokLogUsage } from "./grokLogUsage.ts";
 
 describe("machine usage readers", () => {
-  it("reads Claude stats-cache daily model tokens", () => {
+  it("reads Claude session transcript usage with priced buckets", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-usage-"));
     try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
       NodeFS.writeFileSync(
-        NodePath.join(home, "stats-cache.json"),
+        NodePath.join(sessionDir, "session.jsonl"),
         JSON.stringify({
-          lastComputedDate: "2026-07-10",
-          dailyModelTokens: [
-            {
-              date: "2026-07-10",
-              tokensByModel: { "claude-sonnet-4-6": 12_000 },
+          type: "assistant",
+          timestamp: "2026-07-10T15:00:00.000Z",
+          message: {
+            id: "msg_1",
+            model: "claude-sonnet-4-6",
+            usage: {
+              input_tokens: 1_000,
+              cache_read_input_tokens: 10_000,
+              cache_creation_input_tokens: 1_000,
+              output_tokens: 500,
             },
-          ],
+          },
         }),
       );
       const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
       expect(result.status).toBe("ok");
       expect(result.daily).toHaveLength(1);
-      expect(result.daily[0]?.totalTokens).toBe(12_000);
+      expect(result.daily[0]?.totalTokens).toBe(12_500);
+      expect(result.daily[0]?.cachedInputTokens).toBe(10_000);
       expect(result.daily[0]?.estimatedCostUsd).toBeGreaterThan(0);
     } finally {
       NodeFS.rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it("fills days after lastComputedDate from session transcripts", () => {
-    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-sessions-"));
+  it("prefers costUSD on Claude log lines when present", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-costusd-"));
     try {
-      NodeFS.writeFileSync(
-        NodePath.join(home, "stats-cache.json"),
-        JSON.stringify({
-          lastComputedDate: "2026-07-06",
-          dailyModelTokens: [
-            {
-              date: "2026-07-06",
-              tokensByModel: { "claude-sonnet-4-6": 1_000 },
-            },
-          ],
-        }),
-      );
       const sessionDir = NodePath.join(home, "projects", "demo");
       NodeFS.mkdirSync(sessionDir, { recursive: true });
       NodeFS.writeFileSync(
         NodePath.join(sessionDir, "session.jsonl"),
-        [
-          JSON.stringify({
-            type: "assistant",
-            timestamp: "2026-07-10T12:00:00.000Z",
-            message: {
-              model: "claude-opus-4-8",
-              usage: {
-                input_tokens: 100,
-                cache_read_input_tokens: 1_000,
-                cache_creation_input_tokens: 200,
-                output_tokens: 50,
-              },
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-07-10T15:00:00.000Z",
+          costUSD: 1.23,
+          message: {
+            id: "msg_cost",
+            model: "claude-opus-4-8",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
             },
-          }),
-          JSON.stringify({
-            type: "assistant",
-            timestamp: "2026-07-09T12:00:00.000Z",
-            message: {
-              model: "claude-opus-4-8",
-              usage: {
-                input_tokens: 40,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-                output_tokens: 10,
-              },
-            },
-          }),
-        ].join("\n"),
+          },
+        }),
       );
-
       const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
-      expect(result.status).toBe("ok");
-      const byDay = Object.fromEntries(result.daily.map((row) => [row.day, row]));
-      expect(byDay["2026-07-06"]?.totalTokens).toBe(1_000);
-      expect(byDay["2026-07-09"]?.totalTokens).toBe(50);
-      expect(byDay["2026-07-10"]?.totalTokens).toBe(1_350);
-      expect(byDay["2026-07-10"]?.cachedInputTokens).toBe(1_000);
-      expect(byDay["2026-07-10"]?.cacheWriteTokens).toBe(200);
+      expect(result.daily[0]?.estimatedCostUsd).toBe(1.23);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("prices 1h cache writes separately from 5m writes", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cache1h-"));
+    try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(sessionDir, "session.jsonl"),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-07-10T15:00:00.000Z",
+          message: {
+            id: "msg_1h",
+            model: "claude-opus-4-8",
+            usage: {
+              input_tokens: 0,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation: {
+                ephemeral_5m_input_tokens: 1_000_000,
+                ephemeral_1h_input_tokens: 1_000_000,
+              },
+            },
+          },
+        }),
+      );
+      const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
+      // Opus 4.8: 5m write 6.25 + 1h write 2×input(5)=10 → 16.25
+      expect(result.daily[0]?.cacheWriteTokens).toBe(2_000_000);
+      expect(result.daily[0]?.estimatedCostUsd).toBeCloseTo(16.25, 2);
     } finally {
       NodeFS.rmSync(home, { recursive: true, force: true });
     }
@@ -107,7 +115,7 @@ describe("machine usage readers", () => {
       const assistantLine = (id: string, requestId: string) =>
         JSON.stringify({
           type: "assistant",
-          timestamp: "2026-07-10T12:00:00.000Z",
+          timestamp: "2026-07-10T15:00:00.000Z",
           requestId,
           message: {
             id,
@@ -142,6 +150,46 @@ describe("machine usage readers", () => {
     }
   });
 
+  it("prefers non-sidechain parent over sidechain replay of the same message", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-sidechain-"));
+    try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(sessionDir, "session.jsonl"),
+        [
+          JSON.stringify({
+            type: "assistant",
+            timestamp: "2026-07-10T15:00:00.000Z",
+            requestId: "req_a",
+            isSidechain: true,
+            message: {
+              id: "msg_shared",
+              model: "claude-opus-4-8",
+              usage: { input_tokens: 10, output_tokens: 5 },
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            timestamp: "2026-07-10T15:00:00.000Z",
+            requestId: "req_b",
+            isSidechain: false,
+            message: {
+              id: "msg_shared",
+              model: "claude-opus-4-8",
+              usage: { input_tokens: 10, output_tokens: 5 },
+            },
+          }),
+        ].join("\n"),
+      );
+
+      const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
+      expect(result.daily[0]?.totalTokens).toBe(15);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("still counts legacy transcript rows that carry no message id", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-legacy-"));
     try {
@@ -149,7 +197,7 @@ describe("machine usage readers", () => {
       NodeFS.mkdirSync(sessionDir, { recursive: true });
       const line = JSON.stringify({
         type: "assistant",
-        timestamp: "2026-07-10T12:00:00.000Z",
+        timestamp: "2026-07-10T15:00:00.000Z",
         message: {
           model: "claude-opus-4-8",
           usage: { input_tokens: 10, output_tokens: 5 },
@@ -167,7 +215,46 @@ describe("machine usage readers", () => {
     }
   });
 
-  it("reports missing when Claude stats-cache is absent", () => {
+  it("counts advisor_message iterations under their own model", () => {
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-advisor-"));
+    try {
+      const sessionDir = NodePath.join(home, "projects", "demo");
+      NodeFS.mkdirSync(sessionDir, { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(sessionDir, "session.jsonl"),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-07-10T15:00:00.000Z",
+          message: {
+            id: "msg_parent",
+            model: "claude-opus-4-8",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              iterations: [
+                {
+                  type: "advisor_message",
+                  model: "claude-haiku-4-5-20251001",
+                  input_tokens: 20,
+                  output_tokens: 10,
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const result = readClaudeStatsCacheUsage({ homePath: home, fromDay: "2026-07-01" });
+      expect(result.daily).toHaveLength(2);
+      const opus = result.daily.find((row) => row.model === "claude-opus-4-8");
+      const haiku = result.daily.find((row) => row.model === "claude-haiku-4-5-20251001");
+      expect(opus?.totalTokens).toBe(150);
+      expect(haiku?.totalTokens).toBe(30);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reports missing when Claude projects dir is absent", () => {
     const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-missing-"));
     try {
       const result = readClaudeStatsCacheUsage({ homePath: home });
@@ -227,13 +314,13 @@ describe("machine usage readers", () => {
         NodePath.join(logsDir, "unified.jsonl"),
         [
           JSON.stringify({
-            ts: "2026-07-09T11:00:00.000Z",
+            ts: "2026-07-09T15:00:00.000Z",
             pid: 42,
             msg: "model catalog: notifying clients",
             ctx: { current_model_id: "grok-4.5" },
           }),
           JSON.stringify({
-            ts: "2026-07-09T11:57:14.102Z",
+            ts: "2026-07-09T15:57:14.102Z",
             pid: 42,
             msg: "shell.turn.inference_done",
             ctx: {
@@ -244,7 +331,7 @@ describe("machine usage readers", () => {
             },
           }),
           JSON.stringify({
-            ts: "2026-07-10T01:00:00.000Z",
+            ts: "2026-07-10T15:00:00.000Z",
             pid: 42,
             msg: "shell.turn.inference_done",
             ctx: {

@@ -6,6 +6,7 @@ import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
+  buildShellPendingThread,
   buildThreadTurnInterruptInput,
   canRestoreComposerDraftAfterSendFailure,
   createLocalDispatchSnapshot,
@@ -16,7 +17,10 @@ import {
   reconcileRetainedMountedThreadIds,
   resolveDisplayedThreadError,
   resolveSendEnvMode,
+  shellIndicatesThreadStarted,
   shouldRemoveOptimisticMessageOnSendFailure,
+  shouldShowEmptyConversationPrompt,
+  shouldShowThreadHistoryLoading,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
 
@@ -290,6 +294,171 @@ describe("send failure recovery", () => {
     expect(
       canRestoreComposerDraftAfterSendFailure({ ...emptyComposer, reviewCommentCount: 1 }),
     ).toBe(false);
+  });
+});
+
+describe("thread history empty-state guards", () => {
+  it("detects shell signals that a conversation has already started", () => {
+    expect(shellIndicatesThreadStarted(null)).toBe(false);
+    expect(
+      shellIndicatesThreadStarted({
+        latestTurn: null,
+        session: null,
+        latestUserMessageAt: null,
+      }),
+    ).toBe(false);
+    expect(
+      shellIndicatesThreadStarted({
+        latestTurn: null,
+        session: null,
+        latestUserMessageAt: now,
+      }),
+    ).toBe(true);
+    expect(
+      shellIndicatesThreadStarted({
+        latestTurn: completedTurn,
+        session: null,
+        latestUserMessageAt: null,
+      }),
+    ).toBe(true);
+    expect(
+      shellIndicatesThreadStarted({
+        latestTurn: null,
+        session: readySession,
+        latestUserMessageAt: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("shows history loading while server detail is hydrating", () => {
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 0,
+        detailStatus: "synchronizing",
+        shellIndicatesStarted: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 0,
+        detailStatus: "empty",
+        shellIndicatesStarted: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 0,
+        detailStatus: "cached",
+        shellIndicatesStarted: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("shows history loading when live detail is empty but shell says started", () => {
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 0,
+        detailStatus: "live",
+        shellIndicatesStarted: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not show history loading for a genuine empty live thread", () => {
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 0,
+        detailStatus: "live",
+        shellIndicatesStarted: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not show history loading once messages are present", () => {
+    expect(
+      shouldShowThreadHistoryLoading({
+        routeKind: "server",
+        messageCount: 2,
+        detailStatus: "synchronizing",
+        shellIndicatesStarted: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("only shows the empty conversation prompt when history is idle and empty", () => {
+    expect(
+      shouldShowEmptyConversationPrompt({
+        messageCount: 0,
+        isWorking: false,
+        isHistoryLoading: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowEmptyConversationPrompt({
+        messageCount: 0,
+        isWorking: false,
+        isHistoryLoading: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowEmptyConversationPrompt({
+        messageCount: 0,
+        isWorking: true,
+        isHistoryLoading: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowEmptyConversationPrompt({
+        messageCount: 1,
+        isWorking: false,
+        isHistoryLoading: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("builds a pending thread from shell metadata with empty collections", () => {
+    const shell = {
+      id: threadId,
+      environmentId,
+      projectId,
+      title: "Existing thread",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      branch: "main",
+      worktreePath: null,
+      latestTurn: completedTurn,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      session: readySession,
+      latestUserMessageAt: now,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      hasActionableProposedPlan: false,
+      hasRunningSubagents: false,
+    };
+
+    expect(buildShellPendingThread(shell)).toMatchObject({
+      id: threadId,
+      title: "Existing thread",
+      branch: "main",
+      latestTurn: completedTurn,
+      session: readySession,
+      messages: [],
+      activities: [],
+      proposedPlans: [],
+      checkpoints: [],
+      deletedAt: null,
+    });
   });
 });
 

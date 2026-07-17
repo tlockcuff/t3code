@@ -85,8 +85,9 @@ describe("UsageSettings.logic", () => {
     expect(groups[1]?.maxFillPercent).toBe(90);
   });
 
-  it("summarizes today/yesterday/7d/30d windows", () => {
-    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+  it("summarizes today/yesterday/7d/30d windows on local calendar days", () => {
+    // Local noon on July 10 — independent of UTC offset.
+    const nowMs = new Date(2026, 6, 10, 12, 0, 0).getTime();
     const summary = summarizeHistoryWindows(
       [
         { day: "2026-07-10", totalTokens: 100, estimatedCostUsd: 1 },
@@ -103,7 +104,7 @@ describe("UsageSettings.logic", () => {
   });
 
   it("rolls up machine usage per provider", () => {
-    const nowMs = Date.parse("2026-07-10T12:00:00.000Z");
+    const nowMs = new Date(2026, 6, 10, 12, 0, 0).getTime();
     const summaries = summarizeMachineUsageByProvider(
       [
         {

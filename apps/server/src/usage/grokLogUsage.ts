@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeReadline from "node:readline";
 
+import { localDayKeyFromIso } from "@t3tools/shared/localDay";
+
 import { estimateCostUsd, roundUsd } from "./modelPricing.ts";
 import type { MachineUsageDayRow, MachineUsageSourceResult } from "./claudeStatsCache.ts";
 
@@ -24,11 +26,6 @@ function getGrokHome(): string {
 
 function asNonNegativeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function dayKeyFromIso(iso: string): string | null {
-  const day = iso.slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
 }
 
 function extractModelId(msg: string, ctx: Record<string, unknown>): string | null {
@@ -163,7 +160,7 @@ export async function readGrokLogUsage(input?: {
       if (msg !== "shell.turn.inference_done") continue;
       const ts = row.ts?.trim();
       if (!ts) continue;
-      const day = dayKeyFromIso(ts);
+      const day = localDayKeyFromIso(ts);
       if (!day) continue;
       if (input?.fromDay && day < input.fromDay) continue;
       if (input?.toDay && day > input.toDay) continue;

@@ -31,6 +31,10 @@
       "types": "./src/logging.ts",
       "import": "./src/logging.ts"
     },
+    "./localDay": {
+      "types": "./src/localDay.ts",
+      "import": "./src/localDay.ts"
+    },
     "./observability": {
       "types": "./src/observability.ts",
       "import": "./src/observability.ts"

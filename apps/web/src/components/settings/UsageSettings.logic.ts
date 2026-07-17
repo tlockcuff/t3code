@@ -4,8 +4,10 @@ import type {
   ServerProviderUsage,
 } from "@t3tools/contracts";
 
-import { formatContextWindowTokens } from "../../lib/contextWindow";
+import { localDayOffset } from "@t3tools/shared/localDay";
 import { resolveUsagePlanLabel } from "@t3tools/client-runtime/state/provider-usage";
+
+import { formatContextWindowTokens } from "../../lib/contextWindow";
 
 export type ContextUsageProjectGroup = {
   readonly projectId: string;
@@ -190,13 +192,6 @@ export type HistoryWindowTotals = {
   readonly last30Days: { readonly tokens: number; readonly estimatedCostUsd: number };
 };
 
-function dayOffsetUtc(daysAgo: number, nowMs = Date.now()): string {
-  const date = new Date(nowMs);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() - daysAgo);
-  return date.toISOString().slice(0, 10);
-}
-
 export function summarizeHistoryWindows(
   rows: ReadonlyArray<{
     readonly day: string;
@@ -205,10 +200,11 @@ export function summarizeHistoryWindows(
   }>,
   nowMs = Date.now(),
 ): HistoryWindowTotals {
-  const today = dayOffsetUtc(0, nowMs);
-  const yesterday = dayOffsetUtc(1, nowMs);
-  const from7 = dayOffsetUtc(6, nowMs);
-  const from30 = dayOffsetUtc(29, nowMs);
+  // Local calendar days — same contract as OpenUsage spend tiles.
+  const today = localDayOffset(0, nowMs);
+  const yesterday = localDayOffset(1, nowMs);
+  const from7 = localDayOffset(6, nowMs);
+  const from30 = localDayOffset(29, nowMs);
 
   const empty = { tokens: 0, estimatedCostUsd: 0 };
   const result = {

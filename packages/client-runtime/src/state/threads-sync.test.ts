@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
   OrchestrationGetSnapshotError,
   ProjectId,
@@ -74,6 +75,22 @@ const BASE_THREAD: OrchestrationThread = {
   activities: [],
   checkpoints: [],
   session: null,
+};
+
+/** Warm-cache fixture with history so resume can safely use `afterSequence`. */
+const WARM_THREAD_WITH_MESSAGES: OrchestrationThread = {
+  ...BASE_THREAD,
+  messages: [
+    {
+      id: MessageId.make("msg-warm"),
+      role: "user",
+      text: "cached history",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    },
+  ],
 };
 
 type TestThreadInput = OrchestrationThreadStreamItem | Error;
@@ -291,9 +308,9 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("resumes a warm cache via afterSequence without an HTTP fetch", () =>
+  it.effect("resumes a warm cache with messages via afterSequence without an HTTP fetch", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      const harness = yield* makeHarness({ cached: WARM_THREAD_WITH_MESSAGES });
 
       // The warm cache reaches live from the cached data, and a live event
       // applies on top of it.
@@ -310,12 +327,75 @@ describe("EnvironmentThreads", () => {
       // full snapshot over HTTP.
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
+      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).data).messages).toHaveLength(1);
+    }),
+  );
+
+  it.effect("revalidates an empty warm cache over HTTP before resuming", () =>
+    Effect.gen(function* () {
+      const httpThread: OrchestrationThread = {
+        ...BASE_THREAD,
+        title: "HTTP recovered",
+        messages: [
+          {
+            id: MessageId.make("msg-recovered"),
+            role: "user",
+            text: "history",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T00:00:00.000Z",
+            updatedAt: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      };
+      const harness = yield* makeHarness({
+        // Empty cached messages at a high sequence would otherwise resume via
+        // afterSequence and permanently hide historical message events.
+        cached: BASE_THREAD,
+        httpSnapshot: Option.some({
+          snapshotSequence: CACHED_SNAPSHOT_SEQUENCE,
+          epoch: "test-epoch",
+          thread: httpThread,
+        }),
+      });
+
+      const state = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          Option.isSome(value.data) &&
+          value.data.value.messages.length === 1 &&
+          value.data.value.title === "HTTP recovered",
+      );
+
+      expect(Option.getOrThrow(state.data).messages[0]?.text).toBe("history");
+      expect(yield* Ref.get(harness.loaderCalls)).toBeGreaterThanOrEqual(1);
+    }),
+  );
+
+  it.effect("forces a full snapshot resume when empty warm cache cannot revalidate", () =>
+    Effect.gen(function* () {
+      // Empty warm cache, HTTP unavailable → paint empty cache, but the socket
+      // must not resume from afterSequence or history stays missing forever.
+      const harness = yield* makeHarness({
+        cached: BASE_THREAD,
+        httpSnapshot: Option.none(),
+      });
+      yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.data));
+      // Wait for the durable subscription to attach after the cache seed.
+      yield* Ref.get(harness.subscriptionCount).pipe(
+        Effect.repeat({ until: (count) => count >= 1 }),
+      );
+
+      // First subscribe should omit afterSequence so the server embeds a full
+      // snapshot instead of replaying from the empty cache cursor.
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBeUndefined();
+      expect(yield* Ref.get(harness.loaderCalls)).toBeGreaterThanOrEqual(1);
     }),
   );
 
   it.effect("resumes a warm cache with its cached epoch", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      const harness = yield* makeHarness({ cached: WARM_THREAD_WITH_MESSAGES });
 
       // Drive the subscription live so the resume input has been captured.
       yield* Queue.offer(harness.inputs, titleUpdated("Live title", CACHED_SNAPSHOT_SEQUENCE + 1));
@@ -330,20 +410,24 @@ describe("EnvironmentThreads", () => {
       // The cache carries epoch "test-epoch"; the resume must send it so the
       // server can detect a DB reset/restore.
       expect(yield* Ref.get(harness.lastSubscribeEpoch)).toBe("test-epoch");
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE);
     }),
   );
 
   it.effect("discards cached state and adopts a fresh snapshot when the epoch changes", () =>
     Effect.gen(function* () {
       // Warm cache anchored at epoch "test-epoch" (see makeHarness cache).
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      const harness = yield* makeHarness({ cached: WARM_THREAD_WITH_MESSAGES });
       yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.data));
 
       // The server DB was reset/restored: a fresh snapshot arrives under a NEW
       // epoch with sequences restarted lower than the cached cursor. The reducer
       // must wholesale-adopt it (discarding the stale cached thread) rather than
       // treating the lower sequence as a replay to skip.
-      const resetThread: OrchestrationThread = { ...BASE_THREAD, title: "After reset" };
+      const resetThread: OrchestrationThread = {
+        ...WARM_THREAD_WITH_MESSAGES,
+        title: "After reset",
+      };
       yield* Queue.offer(
         harness.inputs,
         snapshotWithEpoch(resetThread, "new-epoch", CACHED_SNAPSHOT_SEQUENCE - 5),
@@ -371,7 +455,7 @@ describe("EnvironmentThreads", () => {
 
   it.effect("resubscribes from the latest applied sequence, not the startup one", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      const harness = yield* makeHarness({ cached: WARM_THREAD_WITH_MESSAGES });
 
       // Advance past the cached sequence, so the startup cursor is now stale.
       const liveSequence = CACHED_SNAPSHOT_SEQUENCE + 1;
@@ -422,7 +506,10 @@ describe("EnvironmentThreads", () => {
 
   it.effect("seeds the thread from the HTTP snapshot and resumes live events", () =>
     Effect.gen(function* () {
-      const httpThread: OrchestrationThread = { ...BASE_THREAD, title: "HTTP title" };
+      const httpThread: OrchestrationThread = {
+        ...WARM_THREAD_WITH_MESSAGES,
+        title: "HTTP title",
+      };
       const harness = yield* makeHarness({
         httpSnapshot: Option.some({ snapshotSequence: 1, epoch: "test-epoch", thread: httpThread }),
       });

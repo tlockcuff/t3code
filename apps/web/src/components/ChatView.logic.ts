@@ -328,6 +328,101 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
   );
 }
 
+/** Shell-side signals that a conversation already has history, even before detail hydrates. */
+export function shellIndicatesThreadStarted(
+  shell:
+    | {
+        latestTurn: unknown;
+        session: unknown;
+        latestUserMessageAt: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  return Boolean(
+    shell &&
+    (shell.latestTurn !== null || shell.session !== null || shell.latestUserMessageAt !== null),
+  );
+}
+
+/**
+ * True while the timeline should not claim "start a conversation" — detail is
+ * still syncing, or shell metadata says history exists but messages are empty.
+ */
+export function shouldShowThreadHistoryLoading(input: {
+  routeKind: "server" | "draft";
+  messageCount: number;
+  detailStatus: "empty" | "cached" | "synchronizing" | "live" | "deleted";
+  shellIndicatesStarted: boolean;
+}): boolean {
+  if (input.routeKind !== "server") {
+    return false;
+  }
+  if (input.messageCount > 0 || input.detailStatus === "deleted") {
+    return false;
+  }
+  if (
+    input.detailStatus === "empty" ||
+    input.detailStatus === "synchronizing" ||
+    input.detailStatus === "cached"
+  ) {
+    return true;
+  }
+  // Live with empty messages but shell says the thread has already started:
+  // treat as still hydrating rather than a brand-new empty conversation.
+  return input.shellIndicatesStarted;
+}
+
+export function shouldShowEmptyConversationPrompt(input: {
+  messageCount: number;
+  isWorking: boolean;
+  isHistoryLoading: boolean;
+}): boolean {
+  return input.messageCount === 0 && !input.isWorking && !input.isHistoryLoading;
+}
+
+/** Build a detail-shaped thread from shell metadata while messages are still loading. */
+export function buildShellPendingThread<
+  TShell extends {
+    id: ThreadId;
+    environmentId: EnvironmentId;
+    projectId: Thread["projectId"];
+    title: string;
+    modelSelection: Thread["modelSelection"];
+    runtimeMode: Thread["runtimeMode"];
+    interactionMode: Thread["interactionMode"];
+    branch: string | null;
+    worktreePath: string | null;
+    latestTurn: Thread["latestTurn"];
+    createdAt: string;
+    updatedAt: string;
+    archivedAt: string | null;
+    session: Thread["session"];
+  },
+>(shell: TShell): Thread {
+  return {
+    id: shell.id,
+    environmentId: shell.environmentId,
+    projectId: shell.projectId,
+    title: shell.title,
+    modelSelection: shell.modelSelection,
+    runtimeMode: shell.runtimeMode,
+    interactionMode: shell.interactionMode,
+    branch: shell.branch,
+    worktreePath: shell.worktreePath,
+    latestTurn: shell.latestTurn,
+    createdAt: shell.createdAt,
+    updatedAt: shell.updatedAt,
+    archivedAt: shell.archivedAt,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+    session: shell.session,
+  };
+}
+
 // `threadProvider` is the open branded driver kind carried by the session.
 // Unknown driver kinds degrade to `null` (i.e. "unlocked"), which is the safe
 // rollback / fork behavior — the routing layer is the right place to surface

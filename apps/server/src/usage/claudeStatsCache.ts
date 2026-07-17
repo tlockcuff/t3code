@@ -4,6 +4,8 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { localDayKeyFromIso, localDayKeyFromMs } from "@t3tools/shared/localDay";
+
 import { estimateCostUsd, roundUsd } from "./modelPricing.ts";
 
 export type MachineUsageDayRow = {
@@ -25,14 +27,25 @@ export type MachineUsageSourceResult = {
   readonly sourcePath?: string;
 };
 
-type ClaudeDailyModelTokens = {
-  readonly date?: string;
-  readonly tokensByModel?: Record<string, number>;
+type TokenBreakdown = {
+  readonly input: number;
+  readonly cacheWrite5m: number;
+  readonly cacheWrite1h: number;
+  readonly cacheRead: number;
+  readonly output: number;
+  readonly isFast: boolean;
 };
 
-type ClaudeStatsCache = {
-  readonly lastComputedDate?: string;
-  readonly dailyModelTokens?: ReadonlyArray<ClaudeDailyModelTokens>;
+type ClaudeUsageEntry = {
+  readonly timestampMs: number;
+  readonly day: string;
+  readonly tokens: TokenBreakdown;
+  readonly messageId: string | null;
+  readonly requestId: string | null;
+  readonly isSidechain: boolean;
+  readonly hasSpeed: boolean;
+  readonly costUsd: number | null;
+  readonly model: string | null;
 };
 
 type MutableDayRow = {
@@ -43,100 +56,128 @@ type MutableDayRow = {
   outputTokens: number;
   cachedInputTokens: number;
   cacheWriteTokens: number;
+  estimatedCostUsd: number;
 };
 
 const SESSION_SCAN_CACHE_TTL_MS = 60_000;
-const MAX_SESSION_FILES = 800;
+const MAX_SESSION_FILES = 2_000;
+const USAGE_MARKER = '"usage":{';
 
 type SessionScanCache = {
   readonly expiresAt: number;
   readonly fromDay: string;
+  readonly toDay: string | undefined;
+  readonly homePath: string | undefined;
   readonly rows: ReadonlyArray<MachineUsageDayRow>;
 };
 
 let sessionScanCache: SessionScanCache | null = null;
 
-function getClaudeHome(): string {
-  return process.env.CLAUDE_CONFIG_DIR?.trim() || NodePath.join(NodeOS.homedir(), ".claude");
-}
-
 function asNonNegativeInt(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
-function dayKeyFromMs(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
+function totalTokensOf(tokens: TokenBreakdown): number {
+  return (
+    tokens.input + tokens.cacheWrite5m + tokens.cacheWrite1h + tokens.cacheRead + tokens.output
+  );
 }
 
-function addToRowMap(
-  byKey: Map<string, MutableDayRow>,
-  input: {
-    readonly day: string;
-    readonly model: string | null;
-    readonly inputTokens: number;
-    readonly cachedInputTokens: number;
-    readonly cacheWriteTokens: number;
-    readonly outputTokens: number;
-  },
-): void {
-  const totalTokens =
-    input.inputTokens + input.cachedInputTokens + input.cacheWriteTokens + input.outputTokens;
-  if (totalTokens <= 0) return;
-  const key = `${input.day}::${input.model ?? ""}`;
-  const existing = byKey.get(key);
-  if (!existing) {
-    byKey.set(key, {
-      day: input.day,
-      model: input.model,
-      totalTokens,
-      inputTokens: input.inputTokens,
-      outputTokens: input.outputTokens,
-      cachedInputTokens: input.cachedInputTokens,
-      cacheWriteTokens: input.cacheWriteTokens,
-    });
-    return;
+/**
+ * Claude config roots that contain a `projects/` folder.
+ *
+ * Order mirrors OpenUsage / ccusage:
+ * - every entry of `CLAUDE_CONFIG_DIR` (comma-separated) when set
+ * - else `$XDG_CONFIG_HOME/claude` and `~/.claude`
+ * - always append Cowork desktop agent sandboxes when present
+ */
+function resolveClaudeRoots(homeOverride?: string): Array<string> {
+  const roots: Array<string> = [];
+  const seen = new Set<string>();
+
+  const addIfValid = (candidate: string) => {
+    const projects = NodePath.join(candidate, "projects");
+    if (!NodeFS.existsSync(projects)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    roots.push(candidate);
+  };
+
+  if (homeOverride?.trim()) {
+    addIfValid(homeOverride.trim());
+    return roots;
   }
-  existing.totalTokens += totalTokens;
-  existing.inputTokens += input.inputTokens;
-  existing.outputTokens += input.outputTokens;
-  existing.cachedInputTokens += input.cachedInputTokens;
-  existing.cacheWriteTokens += input.cacheWriteTokens;
+
+  const envRaw = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (envRaw) {
+    for (const part of envRaw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)) {
+      let dir = part;
+      if (NodePath.basename(dir) === "projects" && NodeFS.existsSync(dir)) {
+        dir = NodePath.dirname(dir);
+      }
+      addIfValid(dir);
+    }
+  } else {
+    const home = NodeOS.homedir();
+    const xdg = process.env.XDG_CONFIG_HOME?.trim() || NodePath.join(home, ".config");
+    addIfValid(NodePath.join(xdg, "claude"));
+    addIfValid(NodePath.join(home, ".claude"));
+  }
+
+  for (const sandbox of listCoworkClaudeDirs(NodeOS.homedir())) {
+    addIfValid(sandbox);
+  }
+  return roots;
 }
 
-function finalizeRows(byKey: Map<string, MutableDayRow>): Array<MachineUsageDayRow> {
-  return [...byKey.values()]
-    .map((row) => ({
-      day: row.day,
-      model: row.model,
-      totalTokens: row.totalTokens,
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      cachedInputTokens: row.cachedInputTokens,
-      cacheWriteTokens: row.cacheWriteTokens,
-      estimatedCostUsd: roundUsd(
-        estimateCostUsd({
-          model: row.model,
-          inputTokens: row.inputTokens,
-          cachedInputTokens: row.cachedInputTokens,
-          cacheWriteTokens: row.cacheWriteTokens,
-          outputTokens: row.outputTokens,
-          totalTokens: row.totalTokens,
-        }),
-      ),
-    }))
-    .sort((a, b) =>
-      a.day === b.day ? (a.model ?? "").localeCompare(b.model ?? "") : a.day.localeCompare(b.day),
-    );
+/** Cowork (Claude desktop agent mode) per-session `.claude` sandboxes. */
+function listCoworkClaudeDirs(home: string): Array<string> {
+  const base = NodePath.join(
+    home,
+    "Library",
+    "Application Support",
+    "Claude",
+    "local-agent-mode-sessions",
+  );
+  if (!NodeFS.existsSync(base)) return [];
+
+  const subdirs = (dir: string): Array<string> => {
+    try {
+      return NodeFS.readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => NodePath.join(dir, entry.name));
+    } catch {
+      return [];
+    }
+  };
+
+  const dirs: Array<string> = [];
+  for (const group of subdirs(base)) {
+    for (const sub of subdirs(group)) {
+      let sessions = subdirs(sub);
+      for (const holder of sessions) {
+        if (NodePath.basename(holder) === "agent") {
+          sessions = sessions.concat(subdirs(holder));
+        }
+      }
+      for (const session of sessions) {
+        dirs.push(NodePath.join(session, ".claude"));
+      }
+    }
+  }
+  return dirs.sort();
 }
 
-function listRecentSessionFiles(projectsRoot: string, fromDay: string): Array<string> {
-  if (!NodeFS.existsSync(projectsRoot)) return [];
-  // Include the prior UTC day so local-evening files near the boundary are not missed.
-  const fromMs = Date.parse(`${fromDay}T00:00:00.000Z`) - 24 * 60 * 60 * 1_000;
+function listSessionFiles(roots: ReadonlyArray<string>, fromDay: string): Array<string> {
+  // Include prior day of mtime so local-evening files near the window edge are kept.
+  const fromMs = Date.parse(`${fromDay}T00:00:00`) - 24 * 60 * 60 * 1_000;
   const files: Array<{ path: string; mtimeMs: number }> = [];
 
   const walk = (dir: string, depth: number) => {
-    if (depth > 8 || files.length >= MAX_SESSION_FILES * 2) return;
+    if (depth > 10 || files.length >= MAX_SESSION_FILES * 2) return;
     let entries: Array<NodeFS.Dirent>;
     try {
       entries = NodeFS.readdirSync(dir, { withFileTypes: true });
@@ -152,7 +193,7 @@ function listRecentSessionFiles(projectsRoot: string, fromDay: string): Array<st
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
       try {
         const mtimeMs = NodeFS.statSync(full).mtimeMs;
-        if (mtimeMs < fromMs) continue;
+        if (Number.isFinite(fromMs) && mtimeMs < fromMs) continue;
         files.push({ path: full, mtimeMs });
       } catch {
         // skip
@@ -160,106 +201,309 @@ function listRecentSessionFiles(projectsRoot: string, fromDay: string): Array<st
     }
   };
 
-  walk(projectsRoot, 0);
+  for (const root of roots) {
+    walk(NodePath.join(root, "projects"), 0);
+  }
+
   return files
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .sort((a, b) => a.path.localeCompare(b.path))
     .slice(0, MAX_SESSION_FILES)
     .map((file) => file.path);
 }
 
-/**
- * Identity of a single Anthropic API response, for de-duplication.
- *
- * Claude Code copies prior messages into a new transcript whenever a session is
- * resumed (`--continue`, `/resume`) or a subagent writes a sidechain, so the
- * same assistant response is present in several `.jsonl` files. Summing every
- * line therefore counts one API call many times — on a machine with a long
- * resume history this roughly doubles the reported tokens.
- *
- * `message.id` is the Anthropic response id and is the real identity;
- * `requestId` disambiguates the rare case where a retried request reuses an id.
- * Lines carrying neither (older transcripts) cannot be deduplicated and are
- * always counted, which is the safe direction: under-counting a real call is
- * worse than double-counting a legacy one.
- */
-function usageDedupeKey(row: {
-  readonly requestId?: string;
-  readonly message?: { readonly id?: string };
-}): string | null {
-  const messageId = row.message?.id?.trim();
-  if (!messageId) return null;
-  const requestId = row.requestId?.trim();
-  return requestId ? `${messageId}::${requestId}` : messageId;
-}
+function parseTokenBreakdown(usage: Record<string, unknown>): {
+  readonly tokens: TokenBreakdown;
+  readonly hasSpeed: boolean;
+} | null {
+  const inputRaw = usage.input_tokens;
+  const outputRaw = usage.output_tokens;
+  if (typeof inputRaw !== "number" || !Number.isFinite(inputRaw)) return null;
+  if (typeof outputRaw !== "number" || !Number.isFinite(outputRaw)) return null;
 
-function readSessionFileUsage(
-  filePath: string,
-  fromDay: string,
-  toDay: string | undefined,
-  byKey: Map<string, MutableDayRow>,
-  seenUsageKeys: Set<string>,
-): void {
-  let content: string;
-  try {
-    content = NodeFS.readFileSync(filePath, "utf8");
-  } catch {
-    return;
+  const speed = typeof usage.speed === "string" ? usage.speed : null;
+  if (speed !== null && speed !== "fast" && speed !== "standard") return null;
+
+  let cacheWrite5m = 0;
+  let cacheWrite1h = 0;
+  const cacheCreation = usage.cache_creation;
+  if (cacheCreation && typeof cacheCreation === "object" && !Array.isArray(cacheCreation)) {
+    const creation = cacheCreation as Record<string, unknown>;
+    cacheWrite5m = asNonNegativeInt(creation.ephemeral_5m_input_tokens);
+    cacheWrite1h = asNonNegativeInt(creation.ephemeral_1h_input_tokens);
+  } else {
+    cacheWrite5m = asNonNegativeInt(usage.cache_creation_input_tokens);
   }
 
-  for (const line of content.split("\n")) {
-    if (!line.includes('"usage"') || !line.includes('"assistant"')) continue;
-    let parsed: unknown;
+  return {
+    tokens: {
+      input: Math.max(0, Math.floor(inputRaw)),
+      cacheWrite5m,
+      cacheWrite1h,
+      cacheRead: asNonNegativeInt(usage.cache_read_input_tokens),
+      output: Math.max(0, Math.floor(outputRaw)),
+      isFast: speed === "fast",
+    },
+    hasSpeed: speed !== null,
+  };
+}
+
+function isSemverPrefix(value: string): boolean {
+  return /^\d+\.\d+\.\d/.test(value);
+}
+
+function isValidEntry(object: Record<string, unknown>, message: Record<string, unknown>): boolean {
+  const version = object.version;
+  if (typeof version === "string" && version.length > 0 && !isSemverPrefix(version)) {
+    return false;
+  }
+  for (const value of [object.sessionId, object.requestId, message.id, message.model]) {
+    if (typeof value === "string" && value.length === 0) return false;
+  }
+  return true;
+}
+
+function parseEntriesFromLine(line: string): Array<ClaudeUsageEntry> {
+  if (!line.includes(USAGE_MARKER)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const object = parsed as Record<string, unknown>;
+  const timestampRaw = typeof object.timestamp === "string" ? object.timestamp : null;
+  if (!timestampRaw) return [];
+  const day = localDayKeyFromIso(timestampRaw);
+  const timestampMs = Date.parse(timestampRaw);
+  if (!day || !Number.isFinite(timestampMs)) return [];
+
+  const message = object.message;
+  if (typeof message !== "object" || message === null) return [];
+  const messageRecord = message as Record<string, unknown>;
+  const usage = messageRecord.usage;
+  if (typeof usage !== "object" || usage === null) return [];
+  const usageRecord = usage as Record<string, unknown>;
+  const breakdown = parseTokenBreakdown(usageRecord);
+  if (!breakdown) return [];
+  if (!isValidEntry(object, messageRecord)) return [];
+
+  const modelRaw = typeof messageRecord.model === "string" ? messageRecord.model.trim() : null;
+  const model = modelRaw && modelRaw !== "<synthetic>" && modelRaw.length > 0 ? modelRaw : null;
+  const messageId =
+    typeof messageRecord.id === "string" && messageRecord.id.trim().length > 0
+      ? messageRecord.id.trim()
+      : null;
+  const requestId =
+    typeof object.requestId === "string" && object.requestId.trim().length > 0
+      ? object.requestId.trim()
+      : null;
+  const costUsd =
+    typeof object.costUSD === "number" && Number.isFinite(object.costUSD) && object.costUSD >= 0
+      ? object.costUSD
+      : null;
+
+  const parent: ClaudeUsageEntry = {
+    timestampMs,
+    day,
+    tokens: breakdown.tokens,
+    messageId,
+    requestId,
+    isSidechain: object.isSidechain === true,
+    hasSpeed: breakdown.hasSpeed,
+    costUsd,
+    model,
+  };
+
+  const entries: Array<ClaudeUsageEntry> = [parent];
+  const iterations = usageRecord.iterations;
+  if (!Array.isArray(iterations)) return entries;
+
+  let advisorIndex = 0;
+  for (const iteration of iterations) {
+    if (typeof iteration !== "object" || iteration === null) continue;
+    const iter = iteration as Record<string, unknown>;
+    if (iter.type !== "advisor_message") continue;
+    const advisorModel =
+      typeof iter.model === "string" && iter.model.trim().length > 0 ? iter.model.trim() : null;
+    if (!advisorModel) continue;
+    const advisorBreakdown = parseTokenBreakdown(iter);
+    if (!advisorBreakdown) continue;
+    entries.push({
+      timestampMs,
+      day,
+      tokens: advisorBreakdown.tokens,
+      messageId: messageId ? `${messageId}:advisor:${advisorIndex}` : null,
+      requestId,
+      isSidechain: parent.isSidechain,
+      hasSpeed: advisorBreakdown.hasSpeed,
+      costUsd: null,
+      model: advisorModel,
+    });
+    advisorIndex += 1;
+  }
+  return entries;
+}
+
+function shouldReplace(candidate: ClaudeUsageEntry, existing: ClaudeUsageEntry): boolean {
+  if (candidate.isSidechain !== existing.isSidechain) {
+    return existing.isSidechain; // prefer parent
+  }
+  const candidateTotal = totalTokensOf(candidate.tokens);
+  const existingTotal = totalTokensOf(existing.tokens);
+  if (candidateTotal !== existingTotal) {
+    return candidateTotal > existingTotal;
+  }
+  return candidate.hasSpeed && !existing.hasSpeed;
+}
+
+/**
+ * Deduplicate replayed usage lines (resume copies + sidechains).
+ * Mirrors OpenUsage: exact (messageId, requestId), then sidechain-aware messageId match.
+ */
+function dedupeEntries(entries: ReadonlyArray<ClaudeUsageEntry>): Array<ClaudeUsageEntry> {
+  const deduped: Array<ClaudeUsageEntry> = [];
+  const exactIndex = new Map<string, number>();
+  const messageIndex = new Map<string, Array<number>>();
+
+  const exactKey = (messageId: string, requestId: string | null) =>
+    requestId ? `${messageId}::${requestId}` : messageId;
+
+  for (const entry of entries) {
+    if (!entry.messageId) {
+      deduped.push(entry);
+      continue;
+    }
+
+    const key = exactKey(entry.messageId, entry.requestId);
+    let collision = exactIndex.get(key);
+    if (collision === undefined) {
+      const candidates = messageIndex.get(entry.messageId);
+      if (candidates) {
+        collision = candidates.find((index) => {
+          const existing = deduped[index];
+          return existing !== undefined && (entry.isSidechain || existing.isSidechain);
+        });
+      }
+    }
+
+    if (collision !== undefined) {
+      const existing = deduped[collision]!;
+      if (shouldReplace(entry, existing)) {
+        if (existing.messageId) {
+          exactIndex.delete(exactKey(existing.messageId, existing.requestId));
+        }
+        deduped[collision] = entry;
+        exactIndex.set(key, collision);
+      }
+      continue;
+    }
+
+    const index = deduped.length;
+    deduped.push(entry);
+    exactIndex.set(key, index);
+    const list = messageIndex.get(entry.messageId) ?? [];
+    list.push(index);
+    messageIndex.set(entry.messageId, list);
+  }
+  return deduped;
+}
+
+function addPricedRow(byKey: Map<string, MutableDayRow>, entry: ClaudeUsageEntry): void {
+  const tokens = entry.tokens;
+  const totalTokens = totalTokensOf(tokens);
+  if (totalTokens <= 0 && entry.costUsd === null) return;
+
+  const cacheWriteTokens = tokens.cacheWrite5m + tokens.cacheWrite1h;
+  const estimatedCostUsd = roundUsd(
+    estimateCostUsd({
+      model: entry.model,
+      inputTokens: tokens.input,
+      cachedInputTokens: tokens.cacheRead,
+      cacheWriteTokens: tokens.cacheWrite5m,
+      cacheWrite1hTokens: tokens.cacheWrite1h,
+      outputTokens: tokens.output,
+      isFast: tokens.isFast,
+      costUsd: entry.costUsd,
+      totalTokens,
+    }),
+  );
+
+  const key = `${entry.day}::${entry.model ?? ""}`;
+  const existing = byKey.get(key);
+  if (!existing) {
+    byKey.set(key, {
+      day: entry.day,
+      model: entry.model,
+      totalTokens,
+      inputTokens: tokens.input,
+      outputTokens: tokens.output,
+      cachedInputTokens: tokens.cacheRead,
+      cacheWriteTokens,
+      estimatedCostUsd,
+    });
+    return;
+  }
+  existing.totalTokens += totalTokens;
+  existing.inputTokens += tokens.input;
+  existing.outputTokens += tokens.output;
+  existing.cachedInputTokens += tokens.cacheRead;
+  existing.cacheWriteTokens += cacheWriteTokens;
+  existing.estimatedCostUsd = roundUsd(existing.estimatedCostUsd + estimatedCostUsd);
+}
+
+function finalizeRows(byKey: Map<string, MutableDayRow>): Array<MachineUsageDayRow> {
+  return [...byKey.values()]
+    .map((row) => ({
+      day: row.day,
+      model: row.model,
+      totalTokens: row.totalTokens,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      cachedInputTokens: row.cachedInputTokens,
+      cacheWriteTokens: row.cacheWriteTokens,
+      estimatedCostUsd: row.estimatedCostUsd,
+    }))
+    .sort((a, b) =>
+      a.day === b.day ? (a.model ?? "").localeCompare(b.model ?? "") : a.day.localeCompare(b.day),
+    );
+}
+
+function scanSessionFiles(
+  files: ReadonlyArray<string>,
+  fromDay: string,
+  toDay: string | undefined,
+): Array<MachineUsageDayRow> {
+  const raw: Array<ClaudeUsageEntry> = [];
+  for (const filePath of files) {
+    let content: string;
     try {
-      parsed = JSON.parse(line);
+      content = NodeFS.readFileSync(filePath, "utf8");
     } catch {
       continue;
     }
-    if (typeof parsed !== "object" || parsed === null) continue;
-    const row = parsed as {
-      type?: string;
-      timestamp?: string;
-      requestId?: string;
-      message?: {
-        id?: string;
-        model?: string;
-        usage?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
-      };
-    };
-    if (row.type !== "assistant" || !row.message?.usage) continue;
-    const day = row.timestamp?.slice(0, 10);
-    if (!day || day < fromDay) continue;
-    if (toDay && day > toDay) continue;
-    const modelRaw = row.message.model?.trim() || null;
-    if (modelRaw === "<synthetic>") continue;
-
-    const dedupeKey = usageDedupeKey(row);
-    if (dedupeKey !== null) {
-      if (seenUsageKeys.has(dedupeKey)) continue;
-      seenUsageKeys.add(dedupeKey);
+    for (const line of content.split("\n")) {
+      for (const entry of parseEntriesFromLine(line)) {
+        if (entry.day < fromDay) continue;
+        if (toDay && entry.day > toDay) continue;
+        raw.push(entry);
+      }
     }
-
-    const usage = row.message.usage;
-    addToRowMap(byKey, {
-      day,
-      model: modelRaw,
-      inputTokens: asNonNegativeInt(usage.input_tokens),
-      cachedInputTokens: asNonNegativeInt(usage.cache_read_input_tokens),
-      cacheWriteTokens: asNonNegativeInt(usage.cache_creation_input_tokens),
-      outputTokens: asNonNegativeInt(usage.output_tokens),
-    });
   }
+
+  const byKey = new Map<string, MutableDayRow>();
+  for (const entry of dedupeEntries(raw)) {
+    addPricedRow(byKey, entry);
+  }
+  return finalizeRows(byKey);
 }
 
 /**
- * Scan Claude project session transcripts for days after the stats-cache cursor.
+ * Scan Claude project session transcripts for spend (OpenUsage-aligned).
  *
- * `stats-cache.json` often lags (or freezes) while project session `.jsonl`
- * files still have fresh assistant `message.usage` rows for today/yesterday.
+ * Always reads project session JSONL logs (and Cowork sandboxes). Prefers
+ * per-line `costUSD` when present; otherwise prices token buckets including
+ * 5m/1h cache writes. Days are local-calendar keys.
  */
 export function readClaudeSessionTranscriptUsage(input?: {
   readonly fromDay: string;
@@ -267,137 +511,89 @@ export function readClaudeSessionTranscriptUsage(input?: {
   readonly homePath?: string;
   readonly nowMs?: number;
 }): ReadonlyArray<MachineUsageDayRow> {
-  const home = input?.homePath?.trim() || getClaudeHome();
   const fromDay = input?.fromDay;
   if (!fromDay) return [];
   const nowMs = input?.nowMs ?? Date.now();
-  const cacheKey = fromDay;
+  const homePath = input?.homePath?.trim() || undefined;
+
   if (
     sessionScanCache &&
-    sessionScanCache.fromDay === cacheKey &&
-    sessionScanCache.expiresAt > nowMs &&
-    input?.homePath === undefined
+    sessionScanCache.fromDay === fromDay &&
+    sessionScanCache.toDay === input?.toDay &&
+    sessionScanCache.homePath === homePath &&
+    sessionScanCache.expiresAt > nowMs
   ) {
-    const toDay = input?.toDay;
-    return toDay ? sessionScanCache.rows.filter((row) => row.day <= toDay) : sessionScanCache.rows;
+    return sessionScanCache.rows;
   }
 
-  const projectsRoot = NodePath.join(home, "projects");
-  const byKey = new Map<string, MutableDayRow>();
-  // Shared across every file in the scan: a resumed session re-emits the same
-  // assistant messages into a *different* transcript, so a per-file set would
-  // miss exactly the duplicates that matter.
-  const seenUsageKeys = new Set<string>();
-  for (const filePath of listRecentSessionFiles(projectsRoot, fromDay)) {
-    readSessionFileUsage(filePath, fromDay, input?.toDay, byKey, seenUsageKeys);
-  }
-  const rows = finalizeRows(byKey);
-  if (input?.homePath === undefined) {
-    sessionScanCache = {
-      fromDay: cacheKey,
-      expiresAt: nowMs + SESSION_SCAN_CACHE_TTL_MS,
-      rows,
-    };
-  }
+  const roots = resolveClaudeRoots(homePath);
+  if (roots.length === 0) return [];
+
+  const files = listSessionFiles(roots, fromDay);
+  const rows = scanSessionFiles(files, fromDay, input?.toDay);
+
+  sessionScanCache = {
+    fromDay,
+    toDay: input?.toDay,
+    homePath,
+    expiresAt: nowMs + SESSION_SCAN_CACHE_TTL_MS,
+    rows,
+  };
   return rows;
 }
 
-function nextDayKey(day: string): string {
-  const ms = Date.parse(`${day}T00:00:00.000Z`);
-  if (!Number.isFinite(ms)) return day;
-  return dayKeyFromMs(ms + 24 * 60 * 60 * 1_000);
-}
-
+/**
+ * Machine-level Claude spend history.
+ *
+ * Kept export name for RPC/call-site stability. Implementation is now a full
+ * OpenUsage-style session log scan (stats-cache totals are no longer used —
+ * they lag and lack per-bucket breakdowns needed for accurate dollars).
+ */
 export function readClaudeStatsCacheUsage(input?: {
   readonly fromDay?: string;
   readonly toDay?: string;
   readonly homePath?: string;
   readonly nowMs?: number;
 }): MachineUsageSourceResult {
-  const home = input?.homePath?.trim() || getClaudeHome();
-  const sourcePath = NodePath.join(home, "stats-cache.json");
-  const projectsPath = NodePath.join(home, "projects");
-  const hasCache = NodeFS.existsSync(sourcePath);
-  const hasProjects = NodeFS.existsSync(projectsPath);
-  if (!hasCache && !hasProjects) {
-    return { provider: "claude", status: "missing", daily: [], sourcePath };
+  const homePath = input?.homePath?.trim() || undefined;
+  const roots = resolveClaudeRoots(homePath);
+  const primaryRoot = roots[0];
+  const projectsPath = primaryRoot
+    ? NodePath.join(primaryRoot, "projects")
+    : NodePath.join(homePath ?? NodeOS.homedir(), ".claude", "projects");
+
+  if (roots.length === 0) {
+    return {
+      provider: "claude",
+      status: "missing",
+      daily: [],
+      sourcePath: projectsPath,
+    };
   }
 
   try {
-    const byKey = new Map<string, MutableDayRow>();
-    let lastComputedDate: string | null = null;
+    const nowMs = input?.nowMs ?? Date.now();
+    const fromDay = input?.fromDay ?? localDayKeyFromMs(nowMs - 29 * 24 * 60 * 60 * 1_000);
 
-    if (hasCache) {
-      const parsed = JSON.parse(NodeFS.readFileSync(sourcePath, "utf8")) as ClaudeStatsCache;
-      lastComputedDate = parsed.lastComputedDate?.trim() || null;
-      for (const entry of parsed.dailyModelTokens ?? []) {
-        const day = entry.date?.trim();
-        if (!day) continue;
-        if (input?.fromDay && day < input.fromDay) continue;
-        if (input?.toDay && day > input.toDay) continue;
-        // Prefer session transcripts for days after the cache cursor.
-        if (lastComputedDate && day > lastComputedDate) continue;
-        const byModel = entry.tokensByModel ?? {};
-        for (const [model, totalTokensRaw] of Object.entries(byModel)) {
-          const totalTokens =
-            typeof totalTokensRaw === "number" && Number.isFinite(totalTokensRaw)
-              ? Math.max(0, Math.floor(totalTokensRaw))
-              : 0;
-          if (totalTokens <= 0) continue;
-          const key = `${day}::${model}`;
-          byKey.set(key, {
-            day,
-            model,
-            totalTokens,
-            inputTokens: 0,
-            outputTokens: 0,
-            cachedInputTokens: 0,
-            cacheWriteTokens: 0,
-          });
-        }
-      }
-    }
+    const daily = readClaudeSessionTranscriptUsage({
+      fromDay,
+      ...(input?.toDay !== undefined ? { toDay: input.toDay } : {}),
+      ...(homePath !== undefined ? { homePath } : {}),
+      nowMs,
+    });
 
-    const transcriptFromDay =
-      lastComputedDate !== null
-        ? nextDayKey(lastComputedDate)
-        : (input?.fromDay ??
-          dayKeyFromMs((input?.nowMs ?? Date.now()) - 29 * 24 * 60 * 60 * 1_000));
-
-    if (hasProjects) {
-      const transcriptRows = readClaudeSessionTranscriptUsage({
-        fromDay: transcriptFromDay,
-        ...(input?.toDay !== undefined ? { toDay: input.toDay } : {}),
-        ...(input?.homePath !== undefined ? { homePath: input.homePath } : {}),
-        ...(input?.nowMs !== undefined ? { nowMs: input.nowMs } : {}),
-      });
-      for (const row of transcriptRows) {
-        if (input?.fromDay && row.day < input.fromDay) continue;
-        if (input?.toDay && row.day > input.toDay) continue;
-        addToRowMap(byKey, {
-          day: row.day,
-          model: row.model,
-          inputTokens: row.inputTokens,
-          cachedInputTokens: row.cachedInputTokens,
-          cacheWriteTokens: row.cacheWriteTokens,
-          outputTokens: row.outputTokens,
-        });
-      }
-    }
-
-    const daily = finalizeRows(byKey);
     return {
       provider: "claude",
       status: "ok",
       daily,
-      sourcePath: hasCache ? sourcePath : projectsPath,
+      sourcePath: projectsPath,
     };
   } catch (err) {
     return {
       provider: "claude",
       status: "error",
       daily: [],
-      sourcePath,
+      sourcePath: projectsPath,
       error: err instanceof Error ? err.message : "Failed to read Claude usage",
     };
   }

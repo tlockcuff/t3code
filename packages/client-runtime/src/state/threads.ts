@@ -46,6 +46,21 @@ function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): Enviro
 }
 
 /**
+ * A warm cache with no messages is unsafe to resume via `afterSequence` alone.
+ * Cursor replay only delivers events after the cached sequence — if the cache
+ * ever saved an empty message list at a high sequence (common after
+ * `thread.created` / early dispose, or a partial persist), historical
+ * `thread.message-sent` events are skipped and the UI stays on the empty
+ * conversation prompt until a full page reload rebuilds state.
+ *
+ * Prefer an HTTP snapshot whenever the cache has no messages. Empty threads
+ * are cheap; recovering real history is correctness-critical.
+ */
+export function shouldRevalidateEmptyThreadCache(thread: OrchestrationThread): boolean {
+  return thread.messages.length === 0;
+}
+
+/**
  * A thread-not-found failure is terminal: the thread no longer exists on the
  * server, so retrying the subscription can only re-fail forever. The subscribe
  * handler raises this as `OrchestrationGetSnapshotError` with a "was not found"
@@ -220,6 +235,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       : Option.none<OrchestrationThreadDetailSnapshot>();
   });
 
+  // Set when an empty warm cache could not be revalidated over HTTP. Cleared
+  // once a live snapshot frame arrives so subsequent resumes can use cursors.
+  const forceFullSnapshotResumeRef = yield* Ref.make(false);
+
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
@@ -230,6 +249,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       // wholesale-replacing the thread discards the pre-reset cached state.
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* SubscriptionRef.set(lastEpoch, Option.some(item.snapshot.epoch));
+      yield* Ref.set(forceFullSnapshotResumeRef, false);
       yield* setThread(item.snapshot.thread);
       return;
     }
@@ -318,17 +338,44 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.gen(function* () {
       // Establish the base snapshot to resume from, minimizing bytes over the
       // wire:
-      // - Warm cache: reuse the cached snapshot (zero network) and resume via
+      // - Warm cache with messages: reuse it (zero network) and resume via
       //   `afterSequence` so we only receive events since the cached sequence.
+      // - Warm cache with empty messages: revalidate over HTTP. Resuming an
+      //   empty cache via `afterSequence` permanently hides earlier message
+      //   events and leaves the chat on the empty-conversation prompt.
       // - Cold cache: load the full snapshot over HTTP (gzip-compressible, and
       //   off the socket), then resume via `afterSequence`.
       // If no base can be established we fall back to the socket-embedded
       // snapshot so the thread still synchronizes. Overlapping/replayed events
       // are deduped by sequence in applyItem.
-      const base = Option.isSome(cached) ? cached : yield* loadColdSnapshot();
+      //
+      // When an empty warm cache cannot be revalidated over HTTP, force the
+      // socket to send a full snapshot frame (omit `afterSequence`) rather than
+      // cursor-replaying past missing history.
+      let usedUnrevalidatedEmptyCache = false;
+      const base = yield* Effect.gen(function* () {
+        if (Option.isNone(cached)) {
+          return yield* loadColdSnapshot();
+        }
+        if (!shouldRevalidateEmptyThreadCache(cached.value.thread)) {
+          return cached;
+        }
+        const revalidated = yield* loadColdSnapshot();
+        if (Option.isSome(revalidated)) {
+          return revalidated;
+        }
+        usedUnrevalidatedEmptyCache = true;
+        return cached;
+      });
 
       if (Option.isSome(base)) {
         yield* applyItem({ kind: "snapshot", snapshot: base.value });
+      }
+      // applyItem clears the force flag on every snapshot (including the warm
+      // cache seed above). Re-arm it only when that seed was an unrevalidated
+      // empty cache so the first socket frame is a full snapshot.
+      if (usedUnrevalidatedEmptyCache) {
+        yield* Ref.set(forceFullSnapshotResumeRef, true);
       }
 
       // Resolved per subscription attempt, not once: see the equivalent comment
@@ -337,7 +384,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       // sequence we happened to start with.
       const subscribeInput = () => {
         const afterSequence = SubscriptionRef.getUnsafe(lastSequence);
-        if (afterSequence <= 0) {
+        if (afterSequence <= 0 || Ref.getUnsafe(forceFullSnapshotResumeRef)) {
           return { threadId };
         }
         // Send the epoch the cursor belongs to so the server can detect a DB
