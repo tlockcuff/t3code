@@ -21,8 +21,10 @@ import { Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
-import { subscribe } from "../rpc/client.ts";
+import { subscribeDynamic } from "../rpc/client.ts";
+import type { RpcSession } from "../rpc/session.ts";
 import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
@@ -93,12 +95,18 @@ function formatThreadError(cause: Cause.Cause<unknown>): string {
     : "Could not synchronize the thread.";
 }
 
+function shouldPersistThread(thread: OrchestrationThread): boolean {
+  const status = thread.session?.status;
+  return status !== "starting" && status !== "running";
+}
+
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ThreadSnapshotLoader;
+  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cached = yield* cache.loadThread(environmentId, threadId).pipe(
     Effect.catch((error) =>
@@ -133,6 +141,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       onSome: (snapshot) => Option.some(snapshot.epoch),
     }),
   );
+  const awaitingCompletion = yield* Ref.make(false);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
@@ -157,11 +166,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
-  const setSynchronizing = SubscriptionRef.update(state, (current) => ({
-    ...current,
-    status: "synchronizing" as const,
-    error: Option.none(),
-  }));
+  const setSynchronizing = SubscriptionRef.update(state, (current) =>
+    current.status === "deleted"
+      ? current
+      : {
+          ...current,
+          status: "synchronizing" as const,
+          error: Option.none(),
+        },
+  );
   const setReady = SubscriptionRef.update(state, (current) =>
     current.status === "live" || current.status === "deleted"
       ? current
@@ -171,38 +184,53 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           error: Option.none(),
         },
   );
-  const setDisconnected = SubscriptionRef.update(state, (current) => ({
-    ...current,
-    status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
-  }));
-  const setStreamError = (cause: Cause.Cause<unknown>) =>
-    SubscriptionRef.update(state, (current) => ({
+  const setDisconnected = Effect.gen(function* () {
+    yield* Ref.set(awaitingCompletion, false);
+    yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
-      error: Option.some(formatThreadError(cause)),
     }));
+  });
+  const setStreamError = (cause: Cause.Cause<unknown>) =>
+    Ref.set(awaitingCompletion, false).pipe(
+      Effect.andThen(
+        SubscriptionRef.update(state, (current) => ({
+          ...current,
+          status:
+            current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
+          error: Option.some(formatThreadError(cause)),
+        })),
+      ),
+    );
 
   const setThread = Effect.fn("EnvironmentThreadState.setThread")(function* (
     thread: OrchestrationThread,
   ) {
+    const waiting = yield* Ref.get(awaitingCompletion);
     yield* SubscriptionRef.set(state, {
       data: Option.some(thread),
-      status: "live",
+      status: waiting ? "synchronizing" : "live",
       error: Option.none(),
     });
+    // Active threads can update many times per second and retain large tool
+    // payloads. The server remains the source of truth while a turn is active;
+    // persist once it settles so cache encoding stays off the streaming path.
     // Persist the thread together with the sequence AND epoch it reflects so the
     // next warm cache can resume from exactly here — and so a later epoch check
     // can detect a server reset/restore.
-    const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
-    const epoch = yield* SubscriptionRef.get(lastEpoch);
-    yield* Queue.offer(persistence, {
-      snapshotSequence,
-      epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
-      thread,
-    });
+    if (shouldPersistThread(thread)) {
+      const snapshotSequence = yield* SubscriptionRef.get(lastSequence);
+      const epoch = yield* SubscriptionRef.get(lastEpoch);
+      yield* Queue.offer(persistence, {
+        snapshotSequence,
+        epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
+        thread,
+      });
+    }
   });
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
+    yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
       status: "deleted",
@@ -239,9 +267,78 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // once a live snapshot frame arrives so subsequent resumes can use cursors.
   const forceFullSnapshotResumeRef = yield* Ref.make(false);
 
+  // Guards one-time base-snapshot establishment (cold load / empty-cache
+  // revalidation). Done lazily on the first subscribe so it can wait for a
+  // prepared connection, but NOT repeated on every resubscribe: `lastSequence`
+  // already tracks what we hold, so reconnects resume via the cursor without
+  // re-fetching over HTTP.
+  const baseEstablished = yield* Ref.make(false);
+
+  // Establish the base snapshot to resume from, minimizing bytes over the wire:
+  // - Warm cache with messages: reuse it (zero network) and resume via
+  //   `afterSequence` so we only receive events since the cached sequence.
+  // - Warm cache with empty messages: revalidate over HTTP. Resuming an empty
+  //   cache via `afterSequence` permanently hides earlier message events and
+  //   leaves the chat on the empty-conversation prompt. Skipped when the server
+  //   supports the catch-up completion marker: it replays the missing history
+  //   and signals completion, so an HTTP round-trip is unnecessary.
+  // - Cold cache: load the full snapshot over HTTP (gzip-compressible, and off
+  //   the socket), then resume via `afterSequence`.
+  // If no base can be established we fall back to the socket-embedded snapshot
+  // so the thread still synchronizes. Overlapping/replayed events dedupe by
+  // sequence in applyItem.
+  //
+  // When an empty warm cache cannot be revalidated over HTTP, arm the force
+  // flag so the first socket frame is a full snapshot (omit `afterSequence`)
+  // rather than a cursor replay past missing history.
+  const establishBase = Effect.fn("EnvironmentThreadState.establishBase")(function* (
+    supportsCompletionMarker: boolean,
+  ) {
+    if (yield* Ref.get(baseEstablished)) {
+      return;
+    }
+    yield* Ref.set(baseEstablished, true);
+
+    let usedUnrevalidatedEmptyCache = false;
+    const base = yield* Effect.gen(function* () {
+      if (Option.isNone(cached)) {
+        return yield* loadColdSnapshot();
+      }
+      if (supportsCompletionMarker || !shouldRevalidateEmptyThreadCache(cached.value.thread)) {
+        return cached;
+      }
+      const revalidated = yield* loadColdSnapshot();
+      if (Option.isSome(revalidated)) {
+        return revalidated;
+      }
+      usedUnrevalidatedEmptyCache = true;
+      return cached;
+    });
+
+    if (Option.isSome(base)) {
+      yield* applyItem({ kind: "snapshot", snapshot: base.value });
+    }
+    // applyItem clears the force flag on every snapshot (including the warm
+    // cache seed above). Re-arm it only when that seed was an unrevalidated
+    // empty cache so the first socket frame is a full snapshot.
+    if (usedUnrevalidatedEmptyCache) {
+      yield* Ref.set(forceFullSnapshotResumeRef, true);
+    }
+  });
+
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
+    if (item.kind === "synchronized") {
+      yield* Ref.set(awaitingCompletion, false);
+      yield* SubscriptionRef.update(state, (current) =>
+        Option.isSome(current.data) && current.status !== "deleted"
+          ? { ...current, status: "live" as const, error: Option.none() }
+          : current,
+      );
+      return;
+    }
+
     if (item.kind === "snapshot") {
       // Advance the cursor first: `setThread` reads it to tag the persisted
       // snapshot with the sequence it reflects. Re-anchor the epoch too: a fresh
@@ -287,6 +384,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // "unchanged" result is still fully consumed — it just doesn't mutate this
     // thread — so the cursor advances for it too.
     yield* SubscriptionRef.set(lastSequence, item.event.sequence);
+    // A live event applied on top of real data means we now hold genuine
+    // history past the (possibly unrevalidated empty) seed, so a later resume
+    // can safely replay from the cursor. Clear the force flag that would
+    // otherwise keep re-requesting a full snapshot on every resubscribe.
+    yield* Ref.set(forceFullSnapshotResumeRef, false);
     const result = applyThreadDetailEvent(current.data.value, item.event);
     if (result.kind === "updated") {
       yield* setThread(result.thread);
@@ -333,82 +435,75 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       yield* Effect.sleep(Duration.millis(delayMs));
     });
 
+  const foregroundResubscriptions = Option.match(wakeups, {
+    onNone: () => Stream.never,
+    onSome: (service) =>
+      service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
+  });
+
+  // Resolved per subscription attempt, not once: see the equivalent comment in
+  // state/shell.ts. Base establishment (cold load / empty-cache revalidation)
+  // runs lazily on the first attempt so it can wait for a prepared connection;
+  // `baseEstablished` prevents it from re-firing on every resubscribe. Then
+  // `lastSequence` tracks every applied item, so a reconnect resumes from what
+  // we actually hold rather than from the sequence we happened to start with.
+  // `session` gates the opt-in catch-up completion marker on server support.
+  const makeSubscribeInput = Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (
+    session: RpcSession,
+  ) {
+    const supportsCompletionMarker = yield* session.initialConfig.pipe(
+      Effect.map((config) => config.threadResumeCompletionMarker === true),
+      Effect.orElseSucceed(() => false),
+    );
+    yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
+    yield* setSynchronizing;
+
+    yield* establishBase(supportsCompletionMarker);
+
+    const current = yield* SubscriptionRef.get(state);
+    const afterSequence = yield* SubscriptionRef.get(lastSequence);
+    // Resume from the cursor whenever we hold thread data, unless an
+    // unrevalidated empty cache armed the force flag (then take a fresh
+    // snapshot rather than cursor-replay past missing history).
+    const canResume = Option.isSome(current.data) && !Ref.getUnsafe(forceFullSnapshotResumeRef);
+    if (!supportsCompletionMarker && canResume) {
+      yield* SubscriptionRef.update(state, (value) => ({
+        ...value,
+        status: value.status === "deleted" ? value.status : ("live" as const),
+        error: Option.none(),
+      }));
+    }
+
+    const completionMarker = supportsCompletionMarker
+      ? { requestCompletionMarker: true as const }
+      : {};
+    if (!canResume) {
+      return { threadId, ...completionMarker };
+    }
+    // Send the epoch the cursor belongs to so the server can detect a DB
+    // reset/restore and reply with a fresh snapshot instead of a doomed
+    // cursor replay.
+    return Option.match(SubscriptionRef.getUnsafe(lastEpoch), {
+      onNone: () => ({ threadId, afterSequence, ...completionMarker }),
+      onSome: (epoch) => ({ threadId, afterSequence, epoch, ...completionMarker }),
+    });
+  });
+
   yield* setSynchronizing;
   yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      // Establish the base snapshot to resume from, minimizing bytes over the
-      // wire:
-      // - Warm cache with messages: reuse it (zero network) and resume via
-      //   `afterSequence` so we only receive events since the cached sequence.
-      // - Warm cache with empty messages: revalidate over HTTP. Resuming an
-      //   empty cache via `afterSequence` permanently hides earlier message
-      //   events and leaves the chat on the empty-conversation prompt.
-      // - Cold cache: load the full snapshot over HTTP (gzip-compressible, and
-      //   off the socket), then resume via `afterSequence`.
-      // If no base can be established we fall back to the socket-embedded
-      // snapshot so the thread still synchronizes. Overlapping/replayed events
-      // are deduped by sequence in applyItem.
-      //
-      // When an empty warm cache cannot be revalidated over HTTP, force the
-      // socket to send a full snapshot frame (omit `afterSequence`) rather than
-      // cursor-replaying past missing history.
-      let usedUnrevalidatedEmptyCache = false;
-      const base = yield* Effect.gen(function* () {
-        if (Option.isNone(cached)) {
-          return yield* loadColdSnapshot();
-        }
-        if (!shouldRevalidateEmptyThreadCache(cached.value.thread)) {
-          return cached;
-        }
-        const revalidated = yield* loadColdSnapshot();
-        if (Option.isSome(revalidated)) {
-          return revalidated;
-        }
-        usedUnrevalidatedEmptyCache = true;
-        return cached;
-      });
-
-      if (Option.isSome(base)) {
-        yield* applyItem({ kind: "snapshot", snapshot: base.value });
-      }
-      // applyItem clears the force flag on every snapshot (including the warm
-      // cache seed above). Re-arm it only when that seed was an unrevalidated
-      // empty cache so the first socket frame is a full snapshot.
-      if (usedUnrevalidatedEmptyCache) {
-        yield* Ref.set(forceFullSnapshotResumeRef, true);
-      }
-
-      // Resolved per subscription attempt, not once: see the equivalent comment
-      // in state/shell.ts. `lastSequence` tracks every applied item, so a
-      // reconnect resumes from what we actually hold rather than from the
-      // sequence we happened to start with.
-      const subscribeInput = () => {
-        const afterSequence = SubscriptionRef.getUnsafe(lastSequence);
-        if (afterSequence <= 0 || Ref.getUnsafe(forceFullSnapshotResumeRef)) {
-          return { threadId };
-        }
-        // Send the epoch the cursor belongs to so the server can detect a DB
-        // reset/restore and reply with a fresh snapshot instead of a doomed
-        // cursor replay.
-        return Option.match(SubscriptionRef.getUnsafe(lastEpoch), {
-          onNone: () => ({ threadId, afterSequence }),
-          onSome: (epoch) => ({ threadId, afterSequence, epoch }),
-        });
-      };
-
-      yield* subscribe(ORCHESTRATION_WS_METHODS.subscribeThread, subscribeInput, {
-        onExpectedFailure: handleExpectedFailure,
-        // The retry delay is applied inside `handleExpectedFailure` (exponential
-        // backoff), so the RPC layer re-subscribes immediately afterwards.
-        retryExpectedFailureAfter: "0 millis",
-      }).pipe(
-        // A recovered stream resets the backoff so the next transient blip
-        // starts fresh at the base delay.
-        Stream.tap(() => Ref.set(retryDelayMs, THREAD_RETRY_BASE_DELAY_MS)),
-        Stream.interruptWhen(Deferred.await(terminated)),
-        Stream.runForEach(applyItem),
-      );
-    }),
+    subscribeDynamic(ORCHESTRATION_WS_METHODS.subscribeThread, makeSubscribeInput, {
+      onExpectedFailure: handleExpectedFailure,
+      // The retry delay is applied inside `handleExpectedFailure` (exponential
+      // backoff), so the RPC layer re-subscribes immediately afterwards.
+      retryExpectedFailureAfter: "0 millis",
+      resubscribe: foregroundResubscriptions,
+    }).pipe(
+      // A recovered stream resets the backoff so the next transient blip starts
+      // fresh at the base delay.
+      Stream.tap(() => Ref.set(retryDelayMs, THREAD_RETRY_BASE_DELAY_MS)),
+      Stream.interruptWhen(Deferred.await(terminated)),
+      Stream.runForEach(applyItem),
+    ),
   );
 
   yield* Effect.addFinalizer(() =>
@@ -421,11 +516,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         Option.match(current.data, {
           onNone: () => Effect.void,
           onSome: (thread) =>
-            persist({
-              snapshotSequence,
-              epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
-              thread,
-            }),
+            shouldPersistThread(thread)
+              ? persist({
+                  snapshotSequence,
+                  epoch: Option.getOrElse(epoch, () => SNAPSHOT_EPOCH_WILDCARD),
+                  thread,
+                })
+              : Effect.void,
         }),
       ),
     ),
