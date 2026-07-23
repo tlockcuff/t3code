@@ -71,6 +71,8 @@ const BASE_THREAD: OrchestrationThread = {
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",
   archivedAt: null,
+  settledOverride: null,
+  settledAt: null,
   deletedAt: null,
   messages: [],
   proposedPlans: [],
@@ -759,7 +761,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("treats a thread-not-found failure as terminal without retrying", () =>
+  it.effect("recovers from a thread-not-found failure once the thread materializes", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       yield* Queue.offer(
@@ -778,13 +780,34 @@ describe("EnvironmentThreads", () => {
       expect(Option.isNone(state.error)).toBe(true);
       expect(yield* Ref.get(harness.removedThreads)).toEqual([THREAD_ID]);
 
-      // The subscription must not re-issue after a terminal not-found, even when
-      // the backoff window elapses: retrying could only re-fail forever.
-      yield* TestClock.adjust("30 seconds");
-      for (let index = 0; index < 20; index += 1) {
+      // Not-found must NOT latch terminally: draft composers subscribe under
+      // client-minted thread ids before the create command commits, so the
+      // thread can materialize moments later. The subscription re-issues after
+      // the backoff window and the snapshot recovers the state to live.
+      yield* TestClock.adjust("250 millis");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) {
+          break;
+        }
         yield* Effect.yieldNow;
       }
-      expect(yield* Ref.get(harness.subscriptionCount)).toBe(1);
+      expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
+
+      yield* Queue.offer(
+        harness.inputs,
+        snapshot({
+          ...BASE_THREAD,
+          title: "Created after subscribe",
+        }),
+      );
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.title === "Created after subscribe",
+      );
+      expect(Option.isNone(recovered.error)).toBe(true);
     }),
   );
 

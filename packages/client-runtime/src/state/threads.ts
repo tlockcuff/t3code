@@ -8,7 +8,6 @@ import {
   type ThreadId as ThreadIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -63,12 +62,16 @@ export function shouldRevalidateEmptyThreadCache(thread: OrchestrationThread): b
 }
 
 /**
- * A thread-not-found failure is terminal: the thread no longer exists on the
- * server, so retrying the subscription can only re-fail forever. The subscribe
- * handler raises this as `OrchestrationGetSnapshotError` with a "was not found"
- * message (see the server's `subscribeThread` handler) — distinct from a
- * transient snapshot/replay error, which uses a different message and should be
- * retried with backoff.
+ * The thread does not exist on the server right now. That is either a genuine
+ * deletion or a subscribe that raced thread creation: draft composers mount
+ * this state under the client-minted thread id before the create command
+ * commits, so "not found" here must NOT be treated as terminal — the thread
+ * can materialize moments later. The subscribe handler raises this as
+ * `OrchestrationGetSnapshotError` with a "was not found" message (see the
+ * server's `subscribeThread` handler) — distinct from a transient
+ * snapshot/replay error, which uses a different message. Both retry with the
+ * same capped backoff; not-found additionally surfaces as deleted/absent
+ * instead of as a sync error.
  */
 function isThreadNotFoundFailure(cause: Cause.Cause<unknown>): boolean {
   return cause.reasons.some((reason) => {
@@ -411,25 +414,26 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
-  // A thread-not-found failure is terminal; firing this interrupts the whole
-  // subscription so the retry loop can never re-request a deleted thread.
-  const terminated = yield* Deferred.make<void>();
-  // Current backoff delay for retrying transient expected failures. Reset to the
-  // base whenever an item is successfully applied (the stream recovered).
+  // Current backoff delay for retrying expected failures. Reset to the base
+  // whenever an item is successfully applied (the stream recovered).
   const retryDelayMs = yield* Ref.make(THREAD_RETRY_BASE_DELAY_MS);
 
   const handleExpectedFailure = (cause: Cause.Cause<unknown>) =>
     Effect.gen(function* () {
       if (isThreadNotFoundFailure(cause)) {
-        // The thread no longer exists: surface it as deleted/absent and stop
-        // retrying instead of hammering the server ~4x/s until the atom TTL.
+        // Surface as deleted/absent, but keep the retry loop alive: this
+        // state is mounted under client-minted thread ids before the create
+        // command commits (draft composers), so a terminal latch here froze
+        // brand-new conversations — the thread was created moments after the
+        // failed subscribe and no live update ever rendered until a full
+        // reload. The capped backoff keeps genuinely deleted threads from
+        // hammering the server until the atom's idle TTL unmounts it.
         yield* setDeleted();
-        yield* Deferred.succeed(terminated, undefined);
-        return;
+      } else {
+        yield* setStreamError(cause);
       }
-      yield* setStreamError(cause);
       // Back off exponentially (capped) before the subscription is re-issued so
-      // a persistently transient failure does not retry forever at 250ms.
+      // a persistently failing subscription does not retry forever at 250ms.
       const delayMs = yield* Ref.get(retryDelayMs);
       yield* Ref.set(retryDelayMs, Math.min(delayMs * 2, THREAD_RETRY_MAX_DELAY_MS));
       yield* Effect.sleep(Duration.millis(delayMs));
@@ -501,7 +505,6 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       // A recovered stream resets the backoff so the next transient blip starts
       // fresh at the base delay.
       Stream.tap(() => Ref.set(retryDelayMs, THREAD_RETRY_BASE_DELAY_MS)),
-      Stream.interruptWhen(Deferred.await(terminated)),
       Stream.runForEach(applyItem),
     ),
   );

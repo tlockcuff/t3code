@@ -18,12 +18,21 @@ import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
   autoOpenPlanSidebar: false,
+  notificationSoundEnabled: false,
+  notificationSound: "chime",
+  notificationVolume: 0.5,
+  desktopNotificationsEnabled: false,
+  notifyOnCompletion: true,
+  notifyOnApproval: true,
+  notifyOnInput: true,
+  notifyOnFailure: true,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,
   favorites: [],
   providerModelPreferences: {},
+  sidebarAutoSettleAfterDays: 3,
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",
@@ -33,6 +42,7 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   sidebarUsageDrivers: [...DEFAULT_SIDEBAR_USAGE_DRIVERS],
   sidebarUsageDisplayMode: "used",
+  sidebarV2Enabled: false,
   timestampFormat: "24-hour",
   wordWrap: true,
 };

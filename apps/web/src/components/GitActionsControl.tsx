@@ -77,7 +77,7 @@ import {
   useVcsInitAction,
   useVcsPullAction,
 } from "~/lib/sourceControlActions";
-import { useThread } from "~/state/entities";
+import { useThread, useThreadShell } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { sourceControlEnvironment } from "~/state/sourceControl";
@@ -986,7 +986,12 @@ export default function GitActionsControl({
     () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
     [activeThreadRef],
   );
-  const activeServerThread = useThread(activeThreadRef);
+  // On draft routes `activeThreadRef` carries the client-minted id of a
+  // thread that does not exist server-side yet; subscribing detail for it
+  // would race thread creation. Mount the detail subscription only once the
+  // shell knows the thread.
+  const activeThreadShell = useThreadShell(activeThreadRef);
+  const activeServerThread = useThread(activeThreadShell === null ? null : activeThreadRef);
   const activeDraftThread = useComposerDraftStore((store) =>
     draftId
       ? store.getDraftSession(draftId)

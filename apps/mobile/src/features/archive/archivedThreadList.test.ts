@@ -42,6 +42,8 @@ function makeThread(
     hasActionableProposedPlan: false,
     hasRunningSubagents: false,
     ...input,
+    settledOverride: input.settledOverride ?? null,
+    settledAt: input.settledAt ?? null,
   };
 }
 

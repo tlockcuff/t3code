@@ -167,6 +167,8 @@ const makeDefaultOrchestrationReadModel = () => {
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
         latestTurn: null,
         messages: [],
         session: null,
@@ -196,6 +198,8 @@ const makeDefaultOrchestrationThreadShell = (
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
     session: null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
@@ -246,7 +250,10 @@ const browserOtlpTracingLayer = Layer.mergeAll(
 
 const makeAuthTestLayer = () =>
   EnvironmentAuth.layer.pipe(
-    Layer.provide(SqlitePersistenceMemory),
+    // provideMerge (not provide) re-exports SqlClient so the rest of the app
+    // graph — including settlement command handlers that read/write the
+    // projection directly — shares this single in-memory database.
+    Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStore.layer),
   );
 
@@ -5578,6 +5585,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             createdAt: now,
             updatedAt: now,
             archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
             latestTurn: null,
             messages: [],
             session: null,

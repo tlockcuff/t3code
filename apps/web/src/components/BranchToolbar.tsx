@@ -11,7 +11,7 @@ import {
 import { memo, useMemo } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
-import { useProject, useThread } from "../state/entities";
+import { useProject, useThread, useThreadShell } from "../state/entities";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   type EnvMode,
@@ -213,7 +213,12 @@ export const BranchToolbar = memo(function BranchToolbar({
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
   );
-  const serverThread = useThread(threadRef);
+  // On draft routes `threadId` is the client-minted id of a thread that does
+  // not exist server-side yet; subscribing detail for it would race thread
+  // creation. Mount the detail subscription only once the shell knows the
+  // thread.
+  const threadShell = useThreadShell(threadRef);
+  const serverThread = useThread(threadShell === null ? null : threadRef);
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
