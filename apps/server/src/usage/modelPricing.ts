@@ -59,6 +59,17 @@ const MODEL_RATES: ReadonlyArray<{ readonly match: RegExp; readonly rates: Model
     },
   },
   {
+    // Opus 5 is $5 / $25, same as Opus 4.7 / 4.8. Fast mode bills at $10 / $50.
+    match: /claude-opus-5|opus-5/i,
+    rates: {
+      inputPerMTok: 5,
+      outputPerMTok: 25,
+      cacheReadPerMTok: 0.5,
+      cacheWritePerMTok: 6.25,
+      fastMultiplier: 2,
+    },
+  },
+  {
     // Opus 4.7 / 4.8 are $5 / $25 (not the older $15 / $75 Opus 4 list).
     match: /claude-opus-4-[78]|opus-4-[78]|claude-opus-4\.[78]/i,
     rates: {
