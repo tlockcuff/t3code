@@ -33,14 +33,17 @@ export type HomeHeaderEnvironment = HomeListFilterMenuEnvironment;
 export function HomeHeader(props: {
   readonly environments: ReadonlyArray<HomeHeaderEnvironment>;
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
+  readonly spaces: ReadonlyArray<string>;
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly selectedSpace: string | null;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly threadSortOrder: SidebarThreadSortOrder;
   readonly onSearchQueryChange: (query: string) => void;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
+  readonly onSpaceChange: (space: string | null) => void;
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
   readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   readonly onOpenSettings: () => void;
@@ -75,7 +78,9 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
   const mutedColor = useThemeColor("--color-foreground-muted");
   const threadListV2Enabled = useThreadListV2FilterGate();
   const hasCustomListOptions = threadListV2Enabled
-    ? props.selectedEnvironmentId !== null || props.selectedProjectKey !== null
+    ? props.selectedEnvironmentId !== null ||
+      props.selectedProjectKey !== null ||
+      props.selectedSpace !== null
     : hasCustomHomeListOptions(props);
   const menuActions = useMemo<MenuAction[]>(
     () => [
@@ -95,6 +100,27 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
           })),
         ],
       },
+      // Only surface the Space filter once a project carries a space label.
+      ...(props.spaces.length > 0
+        ? ([
+            {
+              id: "space",
+              title: "Space",
+              subactions: [
+                {
+                  id: "space:all",
+                  title: "All spaces",
+                  state: checkedMenuState(props.selectedSpace === null),
+                },
+                ...props.spaces.map((space) => ({
+                  id: `space:${space}`,
+                  title: space,
+                  state: checkedMenuState(props.selectedSpace === space),
+                })),
+              ],
+            },
+          ] satisfies MenuAction[])
+        : []),
       ...(props.projects.length === 0
         ? []
         : ([
@@ -144,6 +170,8 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
       props.projects,
       props.selectedEnvironmentId,
       props.selectedProjectKey,
+      props.selectedSpace,
+      props.spaces,
       props.threadSortOrder,
       threadListV2Enabled,
     ],
@@ -176,6 +204,19 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
         const projectKey = id.slice("project:".length);
         if (props.projects.some((project) => project.key === projectKey)) {
           props.onProjectChange(projectKey);
+        }
+        return;
+      }
+
+      if (id === "space:all") {
+        props.onSpaceChange(null);
+        return;
+      }
+
+      if (id.startsWith("space:")) {
+        const space = props.spaces.find((candidate) => `space:${candidate}` === id);
+        if (space !== undefined) {
+          props.onSpaceChange(space);
         }
         return;
       }
@@ -293,7 +334,9 @@ function IosHomeHeader(props: HomeHeaderProps) {
   const iconColor = useThemeColor("--color-icon");
   const threadListV2Enabled = useThreadListV2FilterGate();
   const hasCustomListOptions = threadListV2Enabled
-    ? props.selectedEnvironmentId !== null || props.selectedProjectKey !== null
+    ? props.selectedEnvironmentId !== null ||
+      props.selectedProjectKey !== null ||
+      props.selectedSpace !== null
     : hasCustomHomeListOptions(props);
   const focusSearch = useCallback(() => {
     searchBarRef.current?.focus();
@@ -404,6 +447,28 @@ function IosHomeHeader(props: HomeHeaderProps) {
                 </NativeHeaderToolbar.MenuAction>
               ))}
             </NativeHeaderToolbar.Menu>
+
+            {props.spaces.length > 0 ? (
+              <NativeHeaderToolbar.Menu title="Space">
+                <NativeHeaderToolbar.Label>Space</NativeHeaderToolbar.Label>
+                <NativeHeaderToolbar.MenuAction
+                  isOn={props.selectedSpace === null}
+                  onPress={() => props.onSpaceChange(null)}
+                  subtitle="Show threads from every space"
+                >
+                  <NativeHeaderToolbar.Label>All spaces</NativeHeaderToolbar.Label>
+                </NativeHeaderToolbar.MenuAction>
+                {props.spaces.map((space) => (
+                  <NativeHeaderToolbar.MenuAction
+                    key={space}
+                    isOn={props.selectedSpace === space}
+                    onPress={() => props.onSpaceChange(space)}
+                  >
+                    <NativeHeaderToolbar.Label>{space}</NativeHeaderToolbar.Label>
+                  </NativeHeaderToolbar.MenuAction>
+                ))}
+              </NativeHeaderToolbar.Menu>
+            ) : null}
 
             {props.projects.length > 0 ? (
               <NativeHeaderToolbar.Menu title="Project">

@@ -284,6 +284,9 @@ export const resolveServerConfig = (
     yield* fs.makeDirectory(path.dirname(serverTracePath), { recursive: true });
     const startupPresentation = options?.startupPresentation ?? "browser";
     const isHeadlessStartup = startupPresentation === "headless";
+    // Default to no auto-open. Watch-mode restarts and agent-driven servers
+    // would otherwise spam system browser tabs. Opt in with T3CODE_NO_BROWSER=0
+    // or an explicit CLI/bootstrap false value (vp run dev --browser).
     const noBrowser = Option.getOrElse(
       resolveOptionPrecedence(
         isHeadlessStartup ? Option.some(true) : Option.none(),
@@ -291,7 +294,7 @@ export const resolveServerConfig = (
         Option.fromUndefinedOr(env.noBrowser),
         Option.fromUndefinedOr(bootstrap?.noBrowser),
       ),
-      () => mode === "desktop",
+      () => true,
     );
     const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
     const autoBootstrapProjectFromCwd = Option.getOrElse(

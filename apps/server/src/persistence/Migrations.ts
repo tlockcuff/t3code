@@ -52,6 +52,7 @@ import Migration0036 from "./Migrations/036_ProjectionThreadHasRunningSubagents.
 import Migration0037 from "./Migrations/037_ProjectionEpoch.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsSettled.ts";
 import Migration0039 from "./Migrations/039_ProjectionThreadsSnoozed.ts";
+import Migration0040 from "./Migrations/040_ProjectionProjectsSpace.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -103,6 +104,7 @@ export const migrationEntries = [
   [37, "ProjectionEpoch", Migration0037],
   [38, "ProjectionThreadsSettled", Migration0038],
   [39, "ProjectionThreadsSnoozed", Migration0039],
+  [40, "ProjectionProjectsSpace", Migration0040],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

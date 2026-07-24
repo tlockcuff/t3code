@@ -86,8 +86,11 @@ export function HomeListOptionsProvider({
 }
 
 export function hasCustomHomeListOptions(
+  // The active Space is server-synced state, not a persisted list option, but
+  // it still marks the filter control as customized when present.
   options: HomeListOptions & {
     readonly selectedProjectKey?: string | null;
+    readonly selectedSpace?: string | null;
   },
 ): boolean {
   const defaultProjectSortOrder =
@@ -97,6 +100,7 @@ export function hasCustomHomeListOptions(
   return (
     options.selectedEnvironmentId !== null ||
     (options.selectedProjectKey !== null && options.selectedProjectKey !== undefined) ||
+    (options.selectedSpace ?? null) !== null ||
     options.projectSortOrder !== defaultProjectSortOrder ||
     options.threadSortOrder !== DEFAULT_SIDEBAR_THREAD_SORT_ORDER
   );

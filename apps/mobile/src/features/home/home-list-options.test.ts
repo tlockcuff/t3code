@@ -28,4 +28,8 @@ describe("home list options", () => {
       hasCustomHomeListOptions({ ...defaults, selectedProjectKey: "environment-1:project-1" }),
     ).toBe(true);
   });
+
+  it("marks a selected space as customized", () => {
+    expect(hasCustomHomeListOptions({ ...defaults, selectedSpace: "work" })).toBe(true);
+  });
 });

@@ -35,12 +35,15 @@ export interface HomeListFilterMenu {
 export function buildHomeListFilterMenu(props: {
   readonly environments: ReadonlyArray<HomeListFilterMenuEnvironment>;
   readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
+  readonly spaces: ReadonlyArray<string>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly selectedSpace: string | null;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly threadSortOrder: SidebarThreadSortOrder;
   readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
   readonly onProjectChange: (projectKey: string | null) => void;
+  readonly onSpaceChange: (space: string | null) => void;
   readonly onProjectSortOrderChange: (sortOrder: HomeProjectSortOrder) => void;
   readonly onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
   /** False hides the sort/group submenus. Thread List v2 uses a fixed
@@ -72,6 +75,30 @@ export function buildHomeListFilterMenu(props: {
       })),
     ],
   });
+
+  // Only surface the Space filter once a project actually carries a space
+  // label, so users who don't group projects never see an empty control.
+  if (props.spaces.length > 0) {
+    items.push({
+      type: "submenu",
+      title: "Space",
+      items: [
+        {
+          type: "action",
+          title: "All spaces",
+          subtitle: "Show threads from every space",
+          state: props.selectedSpace === null ? "on" : "off",
+          onPress: () => props.onSpaceChange(null),
+        },
+        ...props.spaces.map((space) => ({
+          type: "action" as const,
+          title: space,
+          state: props.selectedSpace === space ? ("on" as const) : ("off" as const),
+          onPress: () => props.onSpaceChange(space),
+        })),
+      ],
+    });
+  }
 
   if (props.projects.length > 0) {
     items.push({

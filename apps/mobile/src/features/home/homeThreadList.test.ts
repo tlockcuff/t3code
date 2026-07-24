@@ -19,6 +19,7 @@ function makeProject(
     repositoryIdentity: null,
     defaultModelSelection: null,
     scripts: [],
+    space: null,
     createdAt: "2026-06-01T00:00:00.000Z",
     updatedAt: "2026-06-01T00:00:00.000Z",
     ...input,
@@ -62,6 +63,7 @@ function buildGroups(
     projects,
     threads,
     environmentId: null,
+    space: null,
     searchQuery: "",
     projectSortOrder: "updated_at",
     threadSortOrder: "updated_at",
@@ -522,6 +524,110 @@ describe("buildHomeThreadGroups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.representative.environmentId).toBe(remoteEnvironmentId);
     expect(groups[0]?.threads.map((thread) => thread.environmentId)).toEqual([remoteEnvironmentId]);
+  });
+
+  it("filters projects and threads to a selected space", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const workProject = makeProject({
+      environmentId,
+      id: ProjectId.make("project-work"),
+      title: "Work",
+      space: "work",
+    });
+    const personalProject = makeProject({
+      environmentId,
+      id: ProjectId.make("project-personal"),
+      title: "Personal",
+      space: "personal",
+    });
+    const ungroupedProject = makeProject({
+      environmentId,
+      id: ProjectId.make("project-ungrouped"),
+      title: "Ungrouped",
+      space: null,
+    });
+    const projects = [workProject, personalProject, ungroupedProject];
+    const threads = projects.map((project) =>
+      makeThread({
+        environmentId,
+        id: ThreadId.make(`thread-${project.id}`),
+        projectId: project.id,
+        title: project.title,
+      }),
+    );
+
+    const groups = buildGroups(projects, threads, { space: "work" });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.representative.id).toBe("project-work");
+    expect(groups[0]?.threads.map((thread) => thread.projectId)).toEqual(["project-work"]);
+  });
+
+  it("includes every project (spaced and ungrouped) when no space is selected", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const projects = [
+      makeProject({
+        environmentId,
+        id: ProjectId.make("project-work"),
+        title: "Work",
+        space: "work",
+      }),
+      makeProject({
+        environmentId,
+        id: ProjectId.make("project-ungrouped"),
+        title: "Ungrouped",
+        space: null,
+      }),
+    ];
+    const threads = projects.map((project) =>
+      makeThread({
+        environmentId,
+        id: ThreadId.make(`thread-${project.id}`),
+        projectId: project.id,
+        title: project.title,
+      }),
+    );
+
+    const groups = buildGroups(projects, threads, { space: null });
+
+    expect(groups.map((group) => group.representative.id).sort()).toEqual([
+      "project-ungrouped",
+      "project-work",
+    ]);
+  });
+
+  it("ignores a stale space label that no project carries", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const projects = [
+      makeProject({
+        environmentId,
+        id: ProjectId.make("project-work"),
+        title: "Work",
+        space: "work",
+      }),
+      makeProject({
+        environmentId,
+        id: ProjectId.make("project-ungrouped"),
+        title: "Ungrouped",
+        space: null,
+      }),
+    ];
+    const threads = projects.map((project) =>
+      makeThread({
+        environmentId,
+        id: ThreadId.make(`thread-${project.id}`),
+        projectId: project.id,
+        title: project.title,
+      }),
+    );
+
+    // "archived-space" was renamed/removed, so the filter behaves as unset.
+    const groups = buildGroups(projects, threads, { space: "archived-space" });
+
+    expect(groups.map((group) => group.representative.id).sort()).toEqual([
+      "project-ungrouped",
+      "project-work",
+    ]);
   });
 
   it("matches web repository, repository-path, and separate grouping modes", () => {

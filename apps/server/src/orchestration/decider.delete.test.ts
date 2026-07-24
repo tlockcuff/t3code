@@ -40,6 +40,7 @@ const seedReadModel = Effect.gen(function* () {
       workspaceRoot: "/tmp/project-delete",
       defaultModelSelection: null,
       scripts: [],
+      space: null,
       createdAt: now,
       updatedAt: now,
     },

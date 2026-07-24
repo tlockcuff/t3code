@@ -6,7 +6,10 @@ import {
   effectiveSnoozed,
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import type {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import {
   scopeProjectRef,
   scopeThreadRef,
@@ -86,7 +89,11 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
+import {
+  useClientSettings,
+  usePrimarySettings,
+  useUpdateClientSettings,
+} from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -147,6 +154,7 @@ import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./u
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { deriveSpaceLabels } from "./sidebar/SpaceSwitcher";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -999,6 +1007,7 @@ export default function SidebarV2() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const activeSpace = usePrimarySettings((s) => s.activeSpace);
   const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
     useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -1066,10 +1075,65 @@ export default function SidebarV2() {
       ),
     [environments],
   );
+  // Space filter: the header switcher scopes the whole sidebar to one Space
+  // label. A stale label (set but no current project carries it) — and null —
+  // both mean "All", so visibleProjects falls back to every project.
+  const visibleProjects = useMemo(() => {
+    if (activeSpace === null) return projects;
+    const filtered = projects.filter((project) => project.space === activeSpace);
+    return filtered.length === 0 ? projects : filtered;
+  }, [activeSpace, projects]);
+  const spaceProjectKeys = useMemo(() => {
+    if (activeSpace === null) return null;
+    const keys = new Set(
+      projects
+        .filter((project) => project.space === activeSpace)
+        .map((project) => `${project.environmentId}:${project.id}`),
+    );
+    // Stale label → no keys → treat as unfiltered.
+    return keys.size === 0 ? null : keys;
+  }, [activeSpace, projects]);
+  const spaceLabels = useMemo(() => deriveSpaceLabels(projects), [projects]);
+  const assignProjectToSpace = useCallback(
+    (project: Pick<EnvironmentProject, "environmentId" | "id">, space: string | null) => {
+      void (async () => {
+        const result = await updateProject({
+          environmentId: project.environmentId,
+          input: { projectId: project.id, space },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to move project",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+      })();
+    },
+    [updateProject],
+  );
+  const [newSpaceTargetProject, setNewSpaceTargetProject] = useState<Pick<
+    EnvironmentProject,
+    "environmentId" | "id"
+  > | null>(null);
+  const [newSpaceName, setNewSpaceName] = useState("");
+  const closeNewSpaceDialog = useCallback(() => {
+    setNewSpaceTargetProject(null);
+    setNewSpaceName("");
+  }, []);
+  const submitNewSpace = useCallback(() => {
+    const trimmed = newSpaceName.trim();
+    if (trimmed.length === 0 || newSpaceTargetProject === null) return;
+    assignProjectToSpace(newSpaceTargetProject, trimmed);
+    closeNewSpaceDialog();
+  }, [assignProjectToSpace, closeNewSpaceDialog, newSpaceName, newSpaceTargetProject]);
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
-        items: projects,
+        items: visibleProjects,
         preferredIds: projectOrder,
         getId: getProjectOrderKey,
         getPreferenceIds: (project) => [
@@ -1077,12 +1141,12 @@ export default function SidebarV2() {
           legacyProjectCwdPreferenceKey(project.workspaceRoot),
         ],
       }),
-    [projectOrder, projects],
+    [projectOrder, visibleProjects],
   );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : visibleProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -1092,8 +1156,8 @@ export default function SidebarV2() {
       orderedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
       sidebarProjectSortOrder,
+      visibleProjects,
     ],
   );
   const projectGroups = useMemo(
@@ -1193,7 +1257,7 @@ export default function SidebarV2() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, projectScopeKey, activeSpace]);
 
   const handleRemoveProjectMembers = useCallback(
     async (projectGroup: SidebarProjectSnapshot, members: readonly SidebarProjectGroupMember[]) => {
@@ -1360,12 +1424,15 @@ export default function SidebarV2() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    const visible = threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-    );
+    const visible = threads.filter((thread) => {
+      if (thread.archivedAt !== null) return false;
+      const projectKey = `${thread.environmentId}:${thread.projectId}`;
+      // A thread whose project is filtered out by the active Space must not
+      // appear even when "All projects" is selected.
+      if (spaceProjectKeys !== null && !spaceProjectKeys.has(projectKey)) return false;
+      if (scopedProjectKeys !== null && !scopedProjectKeys.has(projectKey)) return false;
+      return true;
+    });
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
@@ -1412,6 +1479,7 @@ export default function SidebarV2() {
     scopedProjectKeys,
     serverConfigs,
     snoozeWakeTick,
+    spaceProjectKeys,
     threads,
   ]);
 
@@ -2658,6 +2726,41 @@ export default function SidebarV2() {
                         </SelectPopup>
                       </Select>
                     </label>
+                    <label className="grid min-w-0 gap-1.5 sm:col-span-2">
+                      <span className="font-medium text-foreground">Space</span>
+                      <Select
+                        value={member.space ?? "__none__"}
+                        onValueChange={(value) => {
+                          if (value === "__new__") {
+                            setNewSpaceName("");
+                            setNewSpaceTargetProject(member);
+                            return;
+                          }
+                          assignProjectToSpace(member, value === "__none__" ? null : value);
+                        }}
+                      >
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full"
+                          aria-label={`Space for ${member.environmentLabel ?? "current environment"}`}
+                        >
+                          <SelectValue>{member.space ?? "No space"}</SelectValue>
+                        </SelectTrigger>
+                        <SelectPopup align="start" alignItemWithTrigger={false}>
+                          <SelectItem hideIndicator value="__none__">
+                            No space
+                          </SelectItem>
+                          {spaceLabels.map((label) => (
+                            <SelectItem key={label} hideIndicator value={label}>
+                              {label}
+                            </SelectItem>
+                          ))}
+                          <SelectItem hideIndicator value="__new__">
+                            New space…
+                          </SelectItem>
+                        </SelectPopup>
+                      </Select>
+                    </label>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 sm:pl-7">
                     <Button
@@ -2717,6 +2820,45 @@ export default function SidebarV2() {
           <DialogFooter variant="bare">
             <Button onClick={() => setProjectActionsTarget(null)}>Done</Button>
           </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+      <Dialog
+        open={newSpaceTargetProject !== null}
+        onOpenChange={(open) => {
+          if (!open) closeNewSpaceDialog();
+        }}
+      >
+        <DialogPopup className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-sm">New space</DialogTitle>
+            <DialogDescription>
+              Name a space and assign this project to it. Spaces filter the sidebar across
+              environments.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="flex flex-col gap-3 px-6 pb-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitNewSpace();
+            }}
+          >
+            <Input
+              autoFocus
+              aria-label="Space name"
+              placeholder="e.g. Work, Side projects"
+              value={newSpaceName}
+              onChange={(event) => setNewSpaceName(event.currentTarget.value)}
+            />
+            <DialogFooter variant="bare" className="px-0">
+              <Button type="button" variant="ghost" onClick={closeNewSpaceDialog}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={newSpaceName.trim().length === 0}>
+                Create
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogPopup>
       </Dialog>
       <SidebarChromeFooter />

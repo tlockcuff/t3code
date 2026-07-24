@@ -500,6 +500,10 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // Active Space label, shared by every client of this server so switching
+  // spaces on one device follows to the others. `null` = "All projects";
+  // stale labels (no current project carries them) behave as "All".
+  activeSpace: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -622,6 +626,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // patches risk leaving driver-specific config in a half-merged state.
   // The web UI sends a fully-formed map every time it edits this field.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  activeSpace: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

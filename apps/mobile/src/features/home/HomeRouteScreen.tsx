@@ -4,6 +4,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useState } from "react";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
+import { useActiveSpace } from "../../state/activeSpace";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
@@ -51,6 +52,22 @@ export function HomeRouteScreen() {
     () => new Set(environments.map((environment) => environment.environmentId)),
     [environments],
   );
+  // Distinct non-null space labels across projects, sorted; drives the Space
+  // filter submenu and is hidden entirely when no project carries a label.
+  const spaces = useMemo(
+    () =>
+      Arr.sort(
+        Array.from(
+          new Set(
+            projects
+              .map((project) => project.space)
+              .filter((space): space is string => space !== null),
+          ),
+        ),
+        Order.String,
+      ),
+    [projects],
+  );
   const {
     options: listOptions,
     setSelectedEnvironmentId,
@@ -58,6 +75,16 @@ export function HomeRouteScreen() {
     setThreadSortOrder,
   } = useHomeListOptions(availableEnvironmentIds);
   const selectedEnvironmentId = listOptions.selectedEnvironmentId;
+  // The active Space is server-synced (not a per-device list option) so the
+  // selection follows the user across desktop/web/mobile. A stale label is
+  // handled non-destructively downstream (filters behave as "All") rather
+  // than being reset here, so a briefly-offline environment cannot clobber
+  // the synced value.
+  const environmentIdList = useMemo(
+    () => environments.map((environment) => environment.environmentId),
+    [environments],
+  );
+  const [selectedSpace, setSelectedSpace] = useActiveSpace(environmentIdList);
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectFilterOptions = useMemo(
     () =>
@@ -112,13 +139,16 @@ export function HomeRouteScreen() {
         <HomeHeader
           environments={environments}
           projects={projectFilterOptions}
+          spaces={spaces}
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
+          selectedSpace={selectedSpace}
           projectSortOrder={listOptions.projectSortOrder}
           threadSortOrder={listOptions.threadSortOrder}
           onEnvironmentChange={setSelectedEnvironmentId}
           onProjectChange={setSelectedProjectKey}
+          onSpaceChange={setSelectedSpace}
           onOpenSettings={() => navigation.navigate("SettingsSheet", { screen: "Settings" })}
           onProjectSortOrderChange={setProjectSortOrder}
           onSearchQueryChange={setSearchQuery}
@@ -174,6 +204,7 @@ export function HomeRouteScreen() {
           searchQuery={searchQuery}
           selectedEnvironmentId={selectedEnvironmentId}
           selectedProjectKey={selectedProjectKey}
+          selectedSpace={selectedSpace}
           threads={threads}
           threadSortOrder={listOptions.threadSortOrder}
         />

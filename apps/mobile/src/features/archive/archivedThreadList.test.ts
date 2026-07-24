@@ -15,6 +15,7 @@ function makeProject(
     repositoryIdentity: null,
     defaultModelSelection: null,
     scripts: [],
+    space: null,
     createdAt: "2026-06-01T00:00:00.000Z",
     updatedAt: "2026-06-01T00:00:00.000Z",
     ...input,

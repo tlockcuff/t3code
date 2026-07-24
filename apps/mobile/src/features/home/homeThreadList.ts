@@ -253,6 +253,7 @@ export function buildHomeThreadGroups(input: {
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
   readonly pendingTasks?: ReadonlyArray<PendingNewTask>;
   readonly environmentId: EnvironmentId | null;
+  readonly space: string | null;
   readonly searchQuery: string;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly threadSortOrder: SidebarThreadSortOrder;
@@ -264,7 +265,21 @@ export function buildHomeThreadGroups(input: {
   const groups = new Map<string, MutableHomeThreadGroup>();
   const groupKeyByProjectKey = new Map<string, string>();
 
-  for (const scope of buildHomeProjectScopes(input)) {
+  // Stale-label rule: a space filter that no loaded project carries
+  // (label renamed/removed, environment offline) behaves as if unset so the
+  // list never silently empties.
+  const space =
+    input.space !== null && input.projects.some((project) => project.space === input.space)
+      ? input.space
+      : null;
+  const projectsForScopes =
+    space === null ? input.projects : input.projects.filter((project) => project.space === space);
+
+  for (const scope of buildHomeProjectScopes({
+    projects: projectsForScopes,
+    environmentId: input.environmentId,
+    projectGroupingMode: input.projectGroupingMode,
+  })) {
     groups.set(scope.key, {
       key: scope.key,
       projects: [...scope.projects],
@@ -290,6 +305,12 @@ export function buildHomeThreadGroups(input: {
     );
     let groupKey = groupKeyByProjectKey.get(physicalKey);
     if (!groupKey) {
+      // With a space filter active a task only belongs when its project is a
+      // resolved member of the filtered set; a synthetic group carries no space
+      // label, so it cannot satisfy the filter and must not appear.
+      if (space !== null) {
+        continue;
+      }
       // The project shell is not loaded (environment offline / project gone).
       // A queued task must stay visible and deletable regardless, so build a
       // standalone group from the metadata snapshotted at enqueue time.
@@ -307,6 +328,7 @@ export function buildHomeThreadGroups(input: {
             repositoryIdentity: null,
             defaultModelSelection: null,
             scripts: [],
+            space: null,
             createdAt: pendingTask.message.createdAt,
             updatedAt: pendingTask.message.createdAt,
           },

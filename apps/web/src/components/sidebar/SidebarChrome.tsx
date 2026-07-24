@@ -17,6 +17,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../ui/sidebar";
+import { SpaceSwitcher } from "./SpaceSwitcher";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { SidebarUpstreamSyncPill } from "./SidebarUpstreamSyncPill";
@@ -46,6 +47,12 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         )}
       />
       <SidebarBrand onBackdrop={backdropVariant !== null} />
+      <SpaceSwitcher
+        className={cn(
+          "relative z-10 ml-auto",
+          backdropVariant && "text-white/85 hover:bg-white/15 hover:text-white",
+        )}
+      />
     </SidebarHeader>
   );
 });

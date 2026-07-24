@@ -47,7 +47,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, usePrimarySettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
@@ -480,6 +480,7 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
+  const primaryActiveSpace = usePrimarySettings((s) => s.activeSpace);
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1338,6 +1339,14 @@ function OpenCommandPaletteDialog(props: {
         environments.find((environment) => environment.environmentId === input.environmentId)
           ?.serverConfig?.providers ??
         (input.environmentId === primaryEnvironmentId ? providers : []);
+      // Seed the new project into the active Space so it doesn't instantly
+      // vanish from the space-filtered sidebar. A stale active label (no
+      // current project carries it) behaves as "All", so it stays unset.
+      const activeSpace = primaryActiveSpace;
+      const seededSpace =
+        activeSpace !== null && projects.some((project) => project.space === activeSpace)
+          ? activeSpace
+          : null;
       const createResult = await createProject({
         environmentId: input.environmentId,
         input: {
@@ -1349,6 +1358,7 @@ function OpenCommandPaletteDialog(props: {
             targetEnvironmentProviders,
             null,
           ),
+          ...(seededSpace !== null ? { space: seededSpace } : {}),
         },
       });
       if (createResult._tag === "Failure") {
@@ -1390,6 +1400,7 @@ function OpenCommandPaletteDialog(props: {
       projects,
       providers,
       setOpen,
+      primaryActiveSpace,
       clientSettings.sidebarThreadSortOrder,
       threads,
     ],

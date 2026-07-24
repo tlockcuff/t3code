@@ -25,6 +25,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
+import { useActiveSpace } from "../../state/activeSpace";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks, type PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -217,8 +218,28 @@ function ThreadNavigationSidebarPane(
     () => new Set(environments.map((environment) => environment.environmentId)),
     [environments],
   );
+  // Distinct non-null space labels across projects, sorted; drives the Space
+  // filter submenu and is hidden entirely when no project carries a label.
+  const spaces = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          projects
+            .map((project) => project.space)
+            .filter((space): space is string => space !== null),
+        ),
+      ).sort((left, right) => left.localeCompare(right)),
+    [projects],
+  );
   const { options, setSelectedEnvironmentId, setProjectSortOrder, setThreadSortOrder } =
     useHomeListOptions(availableEnvironmentIds);
+  // The active Space is server-synced (not a per-device list option); stale
+  // labels are handled non-destructively in buildHomeThreadGroups.
+  const environmentIdList = useMemo(
+    () => environments.map((environment) => environment.environmentId),
+    [environments],
+  );
+  const [selectedSpace, setSelectedSpace] = useActiveSpace(environmentIdList);
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const projectScopes = useMemo(
     () =>
@@ -314,12 +335,13 @@ function ThreadNavigationSidebarPane(
         threads: scopedThreads,
         pendingTasks: scopedPendingTasks,
         environmentId: options.selectedEnvironmentId,
+        space: selectedSpace,
         searchQuery: props.searchQuery,
         projectSortOrder: options.projectSortOrder,
         threadSortOrder: options.threadSortOrder,
         projectGroupingMode: options.projectGroupingMode,
       }),
-    [options, props.searchQuery, scopedPendingTasks, scopedProjects, scopedThreads],
+    [options, props.searchQuery, scopedPendingTasks, scopedProjects, scopedThreads, selectedSpace],
   );
   const [groupDisplayStates, setGroupDisplayStates] = useState<
     ReadonlyMap<string, HomeGroupDisplayState>
@@ -386,7 +408,7 @@ function ThreadNavigationSidebarPane(
   const [settledVisibleCount, setSettledVisibleCount] = useState(
     THREAD_LIST_V2_SETTLED_INITIAL_COUNT,
   );
-  const settledResetKey = `${options.selectedEnvironmentId ?? "all"}:${selectedProjectKey ?? "all"}:${props.searchQuery.trim()}`;
+  const settledResetKey = `${options.selectedEnvironmentId ?? "all"}:${selectedProjectKey ?? "all"}:${selectedSpace ?? "all"}:${props.searchQuery.trim()}`;
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -548,6 +570,28 @@ function ThreadNavigationSidebarPane(
           })),
         ],
       },
+      // Only surface the Space filter once a project carries a space label.
+      ...(spaces.length > 0
+        ? ([
+            {
+              id: "space",
+              title: "Space",
+              subactions: [
+                {
+                  id: "space:all",
+                  title: "All spaces",
+                  subtitle: "Show threads from every space",
+                  state: selectedSpace === null ? ("on" as const) : ("off" as const),
+                },
+                ...spaces.map((space) => ({
+                  id: `space:${space}`,
+                  title: space,
+                  state: selectedSpace === space ? ("on" as const) : ("off" as const),
+                })),
+              ],
+            },
+          ] satisfies MenuAction[])
+        : []),
       ...(projectFilterOptions.length === 0
         ? []
         : ([
@@ -595,7 +639,15 @@ function ThreadNavigationSidebarPane(
             },
           ] satisfies MenuAction[])),
     ],
-    [environments, options, projectFilterOptions, selectedProjectKey, threadListV2Enabled],
+    [
+      environments,
+      options,
+      projectFilterOptions,
+      selectedProjectKey,
+      selectedSpace,
+      spaces,
+      threadListV2Enabled,
+    ],
   );
   const handleListMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
@@ -609,6 +661,15 @@ function ThreadNavigationSidebarPane(
           (candidate) => String(candidate.environmentId) === event.slice("environment:".length),
         );
         if (environment) setSelectedEnvironmentId(environment.environmentId);
+        return;
+      }
+      if (event === "space:all") {
+        setSelectedSpace(null);
+        return;
+      }
+      if (event.startsWith("space:")) {
+        const space = spaces.find((candidate) => `space:${candidate}` === event);
+        if (space !== undefined) setSelectedSpace(space);
         return;
       }
       if (event === "project:all") {
@@ -642,7 +703,9 @@ function ThreadNavigationSidebarPane(
       projectFilterOptions,
       setProjectSortOrder,
       setSelectedEnvironmentId,
+      setSelectedSpace,
       setThreadSortOrder,
+      spaces,
     ],
   );
 
@@ -920,11 +983,13 @@ function ThreadNavigationSidebarPane(
       updateGroupDisplay,
     ],
   );
-  // v2 ignores the sort/group options, so only the environment filter can
+  // v2 ignores the sort/group options, so only env/project/space filters can
   // light the "customized" state while the beta is on.
   const filterCustomized = threadListV2Enabled
-    ? options.selectedEnvironmentId !== null || selectedProjectKey !== null
-    : hasCustomHomeListOptions({ ...options, selectedProjectKey });
+    ? options.selectedEnvironmentId !== null ||
+      selectedProjectKey !== null ||
+      selectedSpace !== null
+    : hasCustomHomeListOptions({ ...options, selectedProjectKey, selectedSpace });
   const filterIcon = filterCustomized
     ? "line.3.horizontal.decrease.circle.fill"
     : "line.3.horizontal.decrease.circle";
@@ -933,12 +998,15 @@ function ThreadNavigationSidebarPane(
       buildHomeListFilterMenu({
         environments,
         projects: projectFilterOptions,
+        spaces,
         selectedEnvironmentId: options.selectedEnvironmentId,
         selectedProjectKey,
+        selectedSpace,
         projectSortOrder: options.projectSortOrder,
         threadSortOrder: options.threadSortOrder,
         onEnvironmentChange: setSelectedEnvironmentId,
         onProjectChange: setSelectedProjectKey,
+        onSpaceChange: setSelectedSpace,
         onProjectSortOrderChange: setProjectSortOrder,
         onThreadSortOrderChange: setThreadSortOrder,
         listOrganization: !threadListV2Enabled,
@@ -948,9 +1016,12 @@ function ThreadNavigationSidebarPane(
       options,
       projectFilterOptions,
       selectedProjectKey,
+      selectedSpace,
       setProjectSortOrder,
       setSelectedEnvironmentId,
+      setSelectedSpace,
       setThreadSortOrder,
+      spaces,
       threadListV2Enabled,
     ],
   );

@@ -74,6 +74,7 @@ interface HomeScreenProps {
   readonly searchQuery: string;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
+  readonly selectedSpace: string | null;
   readonly projectSortOrder: HomeProjectSortOrder;
   readonly threadSortOrder: SidebarThreadSortOrder;
   readonly projectGroupingMode: SidebarProjectGroupingMode;
@@ -317,6 +318,7 @@ export function HomeScreen(props: HomeScreenProps) {
         threads: scopedThreads,
         pendingTasks: scopedPendingTasks,
         environmentId: props.selectedEnvironmentId,
+        space: props.selectedSpace,
         searchQuery: props.searchQuery,
         projectSortOrder: props.projectSortOrder,
         threadSortOrder: props.threadSortOrder,
@@ -327,6 +329,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.projectSortOrder,
       props.searchQuery,
       props.selectedEnvironmentId,
+      props.selectedSpace,
       props.threadSortOrder,
       scopedPendingTasks,
       scopedProjects,
